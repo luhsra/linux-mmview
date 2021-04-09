@@ -53,12 +53,20 @@ unsigned long __ro_after_init efi_rng_seed = EFI_INVALID_TABLE_ADDR;
 static unsigned long __initdata mem_reserve = EFI_INVALID_TABLE_ADDR;
 static unsigned long __initdata rt_prop = EFI_INVALID_TABLE_ADDR;
 
+struct mm_common efi_mm_common = {
+	MMAP_LOCK_INITIALIZER(efi_mm_common)
+	.base = &efi_mm,
+	.next_view_id = 1
+};
+
 struct mm_struct efi_mm = {
 	.mm_rb			= RB_ROOT,
 	.mm_users		= ATOMIC_INIT(2),
 	.mm_count		= ATOMIC_INIT(1),
 	.write_protect_seq      = SEQCNT_ZERO(efi_mm.write_protect_seq),
-	MMAP_LOCK_INITIALIZER(efi_mm)
+	.common			= &efi_mm_common,
+	.view_id		= 0,
+	.siblings		= LIST_HEAD_INIT(efi_mm.siblings),
 	.page_table_lock	= __SPIN_LOCK_UNLOCKED(efi_mm.page_table_lock),
 	.mmlist			= LIST_HEAD_INIT(efi_mm.mmlist),
 	.cpu_bitmap		= { [BITS_TO_LONGS(NR_CPUS)] = 0},

@@ -570,7 +570,7 @@ static int get_futex_key(u32 __user *uaddr, bool fshared, union futex_key *key,
 	 *        but access_ok() should be faster than find_vma()
 	 */
 	if (!fshared) {
-		key->private.mm = mm;
+		key->private.mm = mm->common->base;
 		key->private.address = address;
 		return 0;
 	}
@@ -671,7 +671,7 @@ again:
 		}
 
 		key->both.offset |= FUT_OFF_MMSHARED; /* ref taken on mm */
-		key->private.mm = mm;
+		key->private.mm = mm->common->base;
 		key->private.address = address;
 
 	} else {

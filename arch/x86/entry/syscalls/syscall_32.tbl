@@ -453,3 +453,8 @@
 446	i386	landlock_restrict_self	sys_landlock_restrict_self
 447	i386	memfd_secret		sys_memfd_secret
 448	i386	process_mrelease	sys_process_mrelease
+
+1000	i386	mmview_create		sys_mmview_create
+1001	i386	mmview_migrate		sys_mmview_migrate
+1002	i386	mmview_unshare		sys_mmview_unshare
+1003	i386	mmview_delete		sys_mmview_delete

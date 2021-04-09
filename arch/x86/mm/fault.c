@@ -1499,7 +1499,7 @@ DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)
 	unsigned long address = read_cr2();
 	irqentry_state_t state;
 
-	prefetchw(&current->mm->mmap_lock);
+	prefetchw(&current->active_mm->common->mmap_lock);
 
 	/*
 	 * KVM uses #PF vector to deliver 'page not present' events to guests

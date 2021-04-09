@@ -2715,7 +2715,7 @@ static int internal_get_user_pages_fast(unsigned long start,
 		mm_set_has_pinned_flag(&current->mm->flags);
 
 	if (!(gup_flags & FOLL_FAST_ONLY))
-		might_lock_read(&current->mm->mmap_lock);
+		might_lock_read(&current->mm->common->mmap_lock);
 
 	start = untagged_addr(start) & PAGE_MASK;
 	len = nr_pages << PAGE_SHIFT;

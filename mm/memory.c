@@ -39,6 +39,7 @@
  * Aug/Sep 2004 Changed to four level page tables (Andi Kleen)
  */
 
+#include "linux/mmdebug.h"
 #include <linux/kernel_stat.h>
 #include <linux/mm.h>
 #include <linux/sched/mm.h>
@@ -770,12 +771,16 @@ try_restore_exclusive_pte(pte_t *src_pte, struct vm_area_struct *vma,
 static unsigned long
 copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 		pte_t *dst_pte, pte_t *src_pte, struct vm_area_struct *dst_vma,
-		struct vm_area_struct *src_vma, unsigned long addr, int *rss)
+		struct vm_area_struct *src_vma, unsigned long addr, int *rss,
+		bool is_mm_view)
 {
 	unsigned long vm_flags = dst_vma->vm_flags;
 	pte_t pte = *src_pte;
 	struct page *page;
 	swp_entry_t entry = pte_to_swp_entry(pte);
+
+	/* FIXME (mm_view) do mm views work with non present ptes? */
+	WARN_ON(is_mm_view && src_vma->mm_view_shared);
 
 	if (likely(!non_swap_entry(entry))) {
 		if (swap_duplicate(entry) < 0)
@@ -796,7 +801,8 @@ copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 		rss[mm_counter(page)]++;
 
 		if (is_writable_migration_entry(entry) &&
-				is_cow_mapping(vm_flags)) {
+		    is_cow_mapping(vm_flags) &&
+		    !(is_mm_view && src_vma->mm_view_shared)) {
 			/*
 			 * COW mappings require pages in both
 			 * parent and child to be set to read.
@@ -834,7 +840,8 @@ copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 		 * save and restore device driver state).
 		 */
 		if (is_writable_device_private_entry(entry) &&
-		    is_cow_mapping(vm_flags)) {
+		    is_cow_mapping(vm_flags) &&
+		    !(is_mm_view && src_vma->mm_view_shared)) {
 			entry = make_readable_device_private_entry(
 							swp_offset(entry));
 			pte = swp_entry_to_pte(entry);
@@ -883,7 +890,8 @@ copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 static inline int
 copy_present_page(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		  pte_t *dst_pte, pte_t *src_pte, unsigned long addr, int *rss,
-		  struct page **prealloc, pte_t pte, struct page *page)
+		  struct page **prealloc, pte_t pte, struct page *page,
+		  bool is_mm_view)
 {
 	struct page *new_page;
 
@@ -901,6 +909,9 @@ copy_present_page(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 	 * for pinning, but it will work correctly.
 	 */
 	if (likely(!page_needs_cow_for_dma(src_vma, page)))
+		return 1;
+
+	if (is_mm_view && src_vma->mm_view_shared)
 		return 1;
 
 	new_page = *prealloc;
@@ -929,13 +940,32 @@ copy_present_page(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 }
 
 /*
+ * This is used in copy_present_pte in the COW case.
+ * FIXME (mm_view) this isn't very optimized
+ */
+static void mm_view_wrprotect_siblings(struct mm_struct *mm,
+				       unsigned long address) {
+	struct mm_struct *mm_cursor;
+	list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+		pte_t *ptep;
+		spinlock_t *ptl;
+		/* mmap_lock is already taken */
+		if (follow_pte(mm_cursor, address, &ptep, &ptl) == 0) {
+			ptep_set_wrprotect(mm_cursor, address, ptep);
+			pte_unmap_unlock(ptep, ptl);
+		}
+	}
+}
+
+
+/*
  * Copy one pte.  Returns 0 if succeeded, or -EAGAIN if one preallocated page
  * is required to copy this pte.
  */
 static inline int
 copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		 pte_t *dst_pte, pte_t *src_pte, unsigned long addr, int *rss,
-		 struct page **prealloc)
+		 struct page **prealloc, bool is_mm_view)
 {
 	struct mm_struct *src_mm = src_vma->vm_mm;
 	unsigned long vm_flags = src_vma->vm_flags;
@@ -947,7 +977,8 @@ copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		int retval;
 
 		retval = copy_present_page(dst_vma, src_vma, dst_pte, src_pte,
-					   addr, rss, prealloc, pte, page);
+					   addr, rss, prealloc, pte, page,
+					   is_mm_view);
 		if (retval <= 0)
 			return retval;
 
@@ -960,15 +991,24 @@ copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	 * If it's a COW mapping, write protect it both
 	 * in the parent and the child
 	 */
-	if (is_cow_mapping(vm_flags) && pte_write(pte)) {
+	if (is_cow_mapping(vm_flags) && pte_write(pte) &&
+	    !(is_mm_view && src_vma->mm_view_shared)) {
 		ptep_set_wrprotect(src_mm, addr, src_pte);
 		pte = pte_wrprotect(pte);
+
+		/*
+		 * If there are sibling mm views, we have to
+		 * wrprotect those pages too.
+		 */
+		mm_view_wrprotect_siblings(src_mm, addr);
 	}
 
 	/*
 	 * If it's a shared mapping, mark it clean in
 	 * the child
 	 */
+	/* FIXME (mm_view) How should the accessed bit (mkold/mkyoung)
+         * and the dirty bit (mkdirty/mkclean) work with mm_view sharing  */
 	if (vm_flags & VM_SHARED)
 		pte = pte_mkclean(pte);
 	pte = pte_mkold(pte);
@@ -978,6 +1018,39 @@ copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 
 	set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
 	return 0;
+}
+
+/*
+ * Copy a present pte from the base mm to the sibling mm
+ * This is similar to copy_present_pte
+ */
+static void
+mm_view_sync_present_pte(struct vm_area_struct *dst_vma,
+			 struct vm_area_struct *src_vma,
+			 pte_t *dst_pte, pte_t *src_pte, unsigned long addr,
+			 int *rss)
+{
+	unsigned long vm_flags = src_vma->vm_flags;
+	pte_t pte = *src_pte;
+	struct page *page;
+
+	page = vm_normal_page(src_vma, addr, pte);
+	if (page) {
+		get_page(page);
+		page_dup_rmap(page, false);
+		rss[mm_counter(page)]++;
+	}
+
+	/*
+	 * If it's a shared mapping, mark it clean in
+	 * the child
+	 */
+	/* FIXME (mm_view) see copy_present_pte */
+	if (vm_flags & VM_SHARED)
+		pte = pte_mkclean(pte);
+	pte = pte_mkold(pte);
+
+	set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
 }
 
 static inline struct page *
@@ -1002,7 +1075,7 @@ page_copy_prealloc(struct mm_struct *src_mm, struct vm_area_struct *vma,
 static int
 copy_pte_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	       pmd_t *dst_pmd, pmd_t *src_pmd, unsigned long addr,
-	       unsigned long end)
+	       unsigned long end, bool is_mm_view)
 {
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
 	struct mm_struct *src_mm = src_vma->vm_mm;
@@ -1049,7 +1122,7 @@ again:
 			ret = copy_nonpresent_pte(dst_mm, src_mm,
 						  dst_pte, src_pte,
 						  dst_vma, src_vma,
-						  addr, rss);
+						  addr, rss, is_mm_view);
 			if (ret == -EIO) {
 				entry = pte_to_swp_entry(*src_pte);
 				break;
@@ -1068,7 +1141,7 @@ again:
 		}
 		/* copy_present_pte() will clear `*prealloc' if consumed */
 		ret = copy_present_pte(dst_vma, src_vma, dst_pte, src_pte,
-				       addr, rss, &prealloc);
+				       addr, rss, &prealloc, is_mm_view);
 		/*
 		 * If we need a pre-allocated page for this pte, drop the
 		 * locks, allocate, and try again.
@@ -1126,7 +1199,7 @@ out:
 static inline int
 copy_pmd_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	       pud_t *dst_pud, pud_t *src_pud, unsigned long addr,
-	       unsigned long end)
+	       unsigned long end, bool is_mm_view)
 {
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
 	struct mm_struct *src_mm = src_vma->vm_mm;
@@ -1154,7 +1227,7 @@ copy_pmd_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		if (pmd_none_or_clear_bad(src_pmd))
 			continue;
 		if (copy_pte_range(dst_vma, src_vma, dst_pmd, src_pmd,
-				   addr, next))
+				   addr, next, is_mm_view))
 			return -ENOMEM;
 	} while (dst_pmd++, src_pmd++, addr = next, addr != end);
 	return 0;
@@ -1163,7 +1236,7 @@ copy_pmd_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 static inline int
 copy_pud_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	       p4d_t *dst_p4d, p4d_t *src_p4d, unsigned long addr,
-	       unsigned long end)
+	       unsigned long end, bool is_mm_view)
 {
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
 	struct mm_struct *src_mm = src_vma->vm_mm;
@@ -1191,7 +1264,7 @@ copy_pud_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		if (pud_none_or_clear_bad(src_pud))
 			continue;
 		if (copy_pmd_range(dst_vma, src_vma, dst_pud, src_pud,
-				   addr, next))
+				   addr, next, is_mm_view))
 			return -ENOMEM;
 	} while (dst_pud++, src_pud++, addr = next, addr != end);
 	return 0;
@@ -1200,7 +1273,7 @@ copy_pud_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 static inline int
 copy_p4d_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	       pgd_t *dst_pgd, pgd_t *src_pgd, unsigned long addr,
-	       unsigned long end)
+	       unsigned long end, bool is_mm_view)
 {
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
 	p4d_t *src_p4d, *dst_p4d;
@@ -1215,14 +1288,15 @@ copy_p4d_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		if (p4d_none_or_clear_bad(src_p4d))
 			continue;
 		if (copy_pud_range(dst_vma, src_vma, dst_p4d, src_p4d,
-				   addr, next))
+				   addr, next, is_mm_view))
 			return -ENOMEM;
 	} while (dst_p4d++, src_p4d++, addr = next, addr != end);
 	return 0;
 }
 
 int
-copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
+	copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
+			bool is_mm_view)
 {
 	pgd_t *src_pgd, *dst_pgd;
 	unsigned long next;
@@ -1263,7 +1337,8 @@ copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
 	 * parent mm. And a permission downgrade will only happen if
 	 * is_cow_mapping() returns true.
 	 */
-	is_cow = is_cow_mapping(src_vma->vm_flags);
+	is_cow = is_cow_mapping(src_vma->vm_flags) &&
+		!(is_mm_view && src_vma->mm_view_shared);
 
 	if (is_cow) {
 		mmu_notifier_range_init(&range, MMU_NOTIFY_PROTECTION_PAGE,
@@ -1288,7 +1363,7 @@ copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
 		if (pgd_none_or_clear_bad(src_pgd))
 			continue;
 		if (unlikely(copy_p4d_range(dst_vma, src_vma, dst_pgd, src_pgd,
-					    addr, next))) {
+					    addr, next, is_mm_view))) {
 			ret = -ENOMEM;
 			break;
 		}
@@ -3707,6 +3782,70 @@ out_release:
 	return ret;
 }
 
+/* Return vlaues:
+ * 0: Success, sibling page found -> finish page fault
+ * 1: No sibling page found
+ * 2: Sibling page found, but another error occured see ret
+ */
+static int mm_view_find_sibling_page(struct vm_fault *vmf, vm_fault_t *ret) {
+	struct vm_area_struct *vma = vmf->vma;
+	struct mm_struct *base_mm = vmf->vma->vm_mm->common->base;
+	struct vm_area_struct *base_vma;
+	int rss[NR_MM_COUNTERS];
+	pte_t *ptep;
+	spinlock_t *ptl;
+	init_rss_vec(rss);
+
+	if (pte_alloc(vma->vm_mm, vmf->pmd)) {
+		*ret = VM_FAULT_OOM;
+		return 2;
+	}
+
+	/* See comment in handle_pte_fault() */
+	if (unlikely(pmd_trans_unstable(vmf->pmd)))
+		return 0;
+
+	base_vma = find_vma(base_mm, vmf->address);
+	if (!base_vma) {
+		return 1;
+	}
+
+	BUG_ON(base_mm == vmf->vma->vm_mm);
+	if (follow_pte(base_mm, vmf->address, &ptep, &ptl)) {
+		return 1;
+	}
+
+	vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
+				       vmf->address, &vmf->ptl);
+	if (!pte_none(*vmf->pte)) {
+		pte_unmap_unlock(vmf->pte, vmf->ptl);
+		pte_unmap_unlock(ptep, ptl);
+		return 0; /* pte has been set by a concurrent fault */
+	}
+
+	if (pte_none(*ptep)) {
+		pte_unmap_unlock(vmf->pte, vmf->ptl);
+		pte_unmap_unlock(ptep, ptl);
+		return 1;
+	}
+
+	arch_enter_lazy_mmu_mode();
+
+	if (unlikely(!pte_present(*ptep))) {
+		BUG();
+		/* FIXME (mm_view) Implement! Similar to copy_nonpresent_pte */
+	}
+	mm_view_sync_present_pte(vma, base_vma, vmf->pte, ptep,
+				 vmf->address, rss);
+
+	arch_leave_lazy_mmu_mode();
+	pte_unmap_unlock(vmf->pte, vmf->ptl);
+	pte_unmap_unlock(ptep, ptl);
+
+	add_mm_rss_vec(vma->vm_mm, rss);
+	return 0;
+}
+
 /*
  * We enter with non-exclusive mmap_lock (to exclude vma changes,
  * but allow concurrent faults), and pte mapped but not yet locked.
@@ -4562,17 +4701,58 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 
 	if (!vmf->pte) {
+		if (vmf->vma->mm_view_shared &&
+		    vmf->vma->vm_mm != vmf->vma->vm_mm->common->base) {
+			/*
+			 * Oh, this vma is possibly shared in multiple views.
+			 * Let's check if the page is already mapped in the
+			 * base mm.
+			 */
+			int ret = 0;
+			vm_fault_t fault_ret = 0;
+			ret = mm_view_find_sibling_page(vmf, &fault_ret);
+			if (ret == 0)
+				return 0;
+			if (ret == 1)
+				return VM_FAULT_VIEW_RETRY;
+			return fault_ret;
+		}
+
 		if (vma_is_anonymous(vmf->vma))
 			return do_anonymous_page(vmf);
 		else
 			return do_fault(vmf);
 	}
 
-	if (!pte_present(vmf->orig_pte))
+	if (!pte_present(vmf->orig_pte)) {
+		/* FIXME (mm_view) Support swapping for mm views */
+		WARN_ON(vmf->vma->vm_mm != vmf->vma->vm_mm->common->base);
 		return do_swap_page(vmf);
+	}
 
-	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma))
+	if (vmf->vma->mm_view_shared) {
+		static atomic_t as_zapping;
+		struct mm_struct *mm_cursor;
+		if (vmf->vma->vm_mm != vmf->vma->vm_mm->common->base)
+			return VM_FAULT_VIEW_RETRY;
+		/* FIXME (mm_view) remove as_zapping workaround */
+		if (atomic_cmpxchg_acquire(&as_zapping, 0, 1) != 0)
+			return 0;
+		list_for_each_entry(mm_cursor, &vmf->vma->vm_mm->siblings,
+				    siblings) {
+			struct vm_area_struct *other_vma =
+				find_vma(mm_cursor, vmf->address);
+			WARN_ON(other_vma == NULL);
+			/* FIXME (mm_view) protect page range -- mm_write_lock */
+			zap_page_range(other_vma, vmf->address, PAGE_SIZE);
+		}
+		atomic_set_release(&as_zapping, 0);
+	}
+
+	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) {
+		WARN_ON(vmf->vma->vm_mm != vmf->vma->vm_mm->common->base);
 		return do_numa_page(vmf);
+	}
 
 	vmf->ptl = pte_lockptr(vmf->vma->vm_mm, vmf->pmd);
 	spin_lock(vmf->ptl);
@@ -4795,10 +4975,19 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 	if (flags & FAULT_FLAG_USER)
 		mem_cgroup_enter_user_fault();
 
-	if (unlikely(is_vm_hugetlb_page(vma)))
+	if (unlikely(is_vm_hugetlb_page(vma))) {
+		/* FIXME (mm_view) missing hugepage support */
+		WARN_ON(vma->vm_mm != vma->vm_mm->common->base);
 		ret = hugetlb_fault(vma->vm_mm, vma, address, flags);
-	else
+	} else {
 		ret = __handle_mm_fault(vma, address, flags);
+		if (ret == VM_FAULT_VIEW_RETRY) {
+			struct vm_area_struct *base_vma =
+				find_vma(vma->vm_mm->common->base, address);
+			ret = __handle_mm_fault(base_vma, address, flags);
+			__handle_mm_fault(vma, address, flags);
+		}
+	}
 
 	if (flags & FAULT_FLAG_USER) {
 		mem_cgroup_exit_user_fault();
@@ -5268,7 +5457,7 @@ void __might_fault(const char *file, int line)
 	__might_sleep(file, line, 0);
 #if defined(CONFIG_DEBUG_ATOMIC_SLEEP)
 	if (current->mm)
-		might_lock_read(&current->mm->mmap_lock);
+		might_lock_read(&current->mm->common->mmap_lock);
 #endif
 }
 EXPORT_SYMBOL(__might_fault);

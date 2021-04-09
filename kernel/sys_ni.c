@@ -476,3 +476,9 @@ COND_SYSCALL(setuid16);
 
 /* restartable sequence */
 COND_SYSCALL(rseq);
+
+/* mmview */
+COND_SYSCALL(mmview_create);
+COND_SYSCALL(mmview_migrate);
+COND_SYSCALL(mmview_unshare);
+COND_SYSCALL(mmview_delete);

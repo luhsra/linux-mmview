@@ -415,3 +415,8 @@
 547	x32	pwritev2		compat_sys_pwritev64v2
 # This is the end of the legacy x32 range.  Numbers 548 and above are
 # not special and are not to be used for x32-specific syscalls.
+
+1000	common	mmview_create		sys_mmview_create
+1001	common	mmview_migrate		sys_mmview_migrate
+1002	common	mmview_unshare		sys_mmview_unshare
+1003	common	mmview_delete		sys_mmview_delete

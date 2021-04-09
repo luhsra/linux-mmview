@@ -2,6 +2,7 @@
 #ifndef _LINUX_MM_TYPES_H
 #define _LINUX_MM_TYPES_H
 
+#include <linux/types.h>
 #include <linux/mm_types_task.h>
 
 #include <linux/auxvec.h>
@@ -340,6 +341,9 @@ struct vm_area_struct {
 
 	struct mm_struct *vm_mm;	/* The address space we belong to. */
 
+	/* Is this VMA shared between the mm views */
+	bool mm_view_shared;
+
 	/*
 	 * Access permissions of this VMA.
 	 * See vmf_insert_mixed_prot() for discussion.
@@ -396,6 +400,12 @@ struct core_state {
 	atomic_t nr_threads;
 	struct core_thread dumper;
 	struct completion startup;
+};
+
+struct mm_common {
+	struct mm_struct *base;
+	u64 next_view_id;
+	struct rw_semaphore mmap_lock;
 };
 
 struct kioctx_table;
@@ -458,19 +468,9 @@ struct mm_struct {
 		spinlock_t page_table_lock; /* Protects page tables and some
 					     * counters
 					     */
-		/*
-		 * With some kernel config, the current mmap_lock's offset
-		 * inside 'mm_struct' is at 0x120, which is very optimal, as
-		 * its two hot fields 'count' and 'owner' sit in 2 different
-		 * cachelines,  and when mmap_lock is highly contended, both
-		 * of the 2 fields will be accessed frequently, current layout
-		 * will help to reduce cache bouncing.
-		 *
-		 * So please be careful with adding new fields before
-		 * mmap_lock, which can easily push the 2 fields into one
-		 * cacheline.
-		 */
-		struct rw_semaphore mmap_lock;
+		struct mm_common *common;
+		struct list_head siblings;
+		u64 view_id;
 
 		struct list_head mmlist; /* List of maybe swapped mm's.	These
 					  * are globally strung together off
@@ -590,6 +590,11 @@ struct mm_struct {
 };
 
 extern struct mm_struct init_mm;
+
+static inline bool mm_has_views(struct mm_struct *mm)
+{
+	return !list_empty(&mm->siblings);
+}
 
 /* Pointer magic because the dynamic array size confuses some compilers. */
 static inline void mm_init_cpumask(struct mm_struct *mm)
@@ -743,6 +748,7 @@ enum vm_fault_reason {
 	VM_FAULT_FALLBACK       = (__force vm_fault_t)0x000800,
 	VM_FAULT_DONE_COW       = (__force vm_fault_t)0x001000,
 	VM_FAULT_NEEDDSYNC      = (__force vm_fault_t)0x002000,
+	VM_FAULT_VIEW_RETRY     = (__force vm_fault_t)0x004000,
 	VM_FAULT_HINDEX_MASK    = (__force vm_fault_t)0x0f0000,
 };
 

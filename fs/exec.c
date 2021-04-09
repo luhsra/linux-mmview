@@ -23,6 +23,8 @@
  * formats.
  */
 
+#include "linux/kern_levels.h"
+#include "linux/mmview.h"
 #include <linux/kernel_read_file.h>
 #include <linux/slab.h>
 #include <linux/file.h>

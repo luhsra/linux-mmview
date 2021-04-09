@@ -189,8 +189,8 @@ static struct vm_area_struct *remove_vma(struct vm_area_struct *vma)
 	return next;
 }
 
-static int do_brk_flags(unsigned long addr, unsigned long request, unsigned long flags,
-		struct list_head *uf);
+static int do_brk_flags(struct mm_struct *mm, unsigned long addr, unsigned long request,
+			unsigned long flags, struct list_head *uf);
 SYSCALL_DEFINE1(brk, unsigned long, brk)
 {
 	unsigned long newbrk, oldbrk, origbrk;
@@ -199,6 +199,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	unsigned long min_brk;
 	bool populate;
 	bool downgraded = false;
+	int ret;
 	LIST_HEAD(uf);
 
 	if (mmap_write_lock_killable(mm))
@@ -236,6 +237,14 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	oldbrk = PAGE_ALIGN(mm->brk);
 	if (oldbrk == newbrk) {
 		mm->brk = brk;
+		/* Do the same for all as_generations */
+		if (mm_has_views(mm)) {
+			struct mm_struct *mm_cursor;
+			list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+				BUG_ON(PAGE_ALIGN(mm_cursor->brk) != newbrk);
+				mm_cursor->brk = brk;
+			}
+		}
 		goto success;
 	}
 
@@ -252,13 +261,26 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		 * mm->brk will be restored from origbrk.
 		 */
 		mm->brk = brk;
-		ret = __do_munmap(mm, newbrk, oldbrk-newbrk, &uf, true);
+		ret = __do_munmap(mm, newbrk, oldbrk-newbrk, &uf, !mm_has_views(mm));
 		if (ret < 0) {
 			mm->brk = origbrk;
 			goto out;
 		} else if (ret == 1) {
 			downgraded = true;
 		}
+
+		/* Do the same for all as_generations */
+		if (mm_has_views(mm)) {
+			struct mm_struct *mm_cursor;
+			int other_ret;
+			BUG_ON(downgraded);  /* This should not happen. */
+			list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+				mm_cursor->brk = brk;
+				other_ret = __do_munmap(mm_cursor, newbrk, oldbrk-newbrk, &uf, false);
+				BUG_ON(other_ret);
+			}
+		}
+
 		goto success;
 	}
 
@@ -268,9 +290,20 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 		goto out;
 
 	/* Ok, looks good - let it rip. */
-	if (do_brk_flags(oldbrk, newbrk-oldbrk, 0, &uf) < 0)
+	ret = do_brk_flags(mm, oldbrk, newbrk-oldbrk, 0, &uf);
+	if (ret < 0)
 		goto out;
 	mm->brk = brk;
+	/* Do the same for all as_generations */
+	if (mm_has_views(mm)) {
+		struct mm_struct *mm_cursor;
+		int other_ret;
+		list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+			other_ret = do_brk_flags(mm_cursor, oldbrk, newbrk-oldbrk, 0, &uf);
+			BUG_ON(ret != other_ret);
+			mm_cursor->brk = brk;
+		}
+	}
 
 success:
 	populate = newbrk > oldbrk && (mm->def_flags & VM_LOCKED) != 0;
@@ -600,7 +633,7 @@ munmap_vma_range(struct mm_struct *mm, unsigned long start, unsigned long len,
 {
 
 	while (find_vma_links(mm, start, start + len, pprev, link, parent))
-		if (do_munmap(mm, start, len, uf))
+		if (__do_munmap(mm, start, len, uf, false))
 			return -ENOMEM;
 
 	return 0;
@@ -1029,7 +1062,8 @@ again:
  */
 static inline int is_mergeable_vma(struct vm_area_struct *vma,
 				struct file *file, unsigned long vm_flags,
-				struct vm_userfaultfd_ctx vm_userfaultfd_ctx)
+				   struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
+				   bool mm_view_shared)
 {
 	/*
 	 * VM_SOFTDIRTY should not prevent from VMA merging, if we
@@ -1040,6 +1074,8 @@ static inline int is_mergeable_vma(struct vm_area_struct *vma,
 	 * extended instead.
 	 */
 	if ((vma->vm_flags ^ vm_flags) & ~VM_SOFTDIRTY)
+		return 0;
+	if (!!vma->mm_view_shared != !!mm_view_shared)
 		return 0;
 	if (vma->vm_file != file)
 		return 0;
@@ -1059,7 +1095,7 @@ static inline int is_mergeable_anon_vma(struct anon_vma *anon_vma1,
 	 * parents. This can improve scalability caused by anon_vma lock.
 	 */
 	if ((!anon_vma1 || !anon_vma2) && (!vma ||
-		list_is_singular(&vma->anon_vma_chain)))
+		(mm_has_views(vma->vm_mm) || list_is_singular(&vma->anon_vma_chain))))
 		return 1;
 	return anon_vma1 == anon_vma2;
 }
@@ -1079,9 +1115,11 @@ static int
 can_vma_merge_before(struct vm_area_struct *vma, unsigned long vm_flags,
 		     struct anon_vma *anon_vma, struct file *file,
 		     pgoff_t vm_pgoff,
-		     struct vm_userfaultfd_ctx vm_userfaultfd_ctx)
+		     struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
+		     bool mm_view_shared)
 {
-	if (is_mergeable_vma(vma, file, vm_flags, vm_userfaultfd_ctx) &&
+	if (is_mergeable_vma(vma, file, vm_flags, vm_userfaultfd_ctx,
+			     mm_view_shared) &&
 	    is_mergeable_anon_vma(anon_vma, vma->anon_vma, vma)) {
 		if (vma->vm_pgoff == vm_pgoff)
 			return 1;
@@ -1100,9 +1138,11 @@ static int
 can_vma_merge_after(struct vm_area_struct *vma, unsigned long vm_flags,
 		    struct anon_vma *anon_vma, struct file *file,
 		    pgoff_t vm_pgoff,
-		    struct vm_userfaultfd_ctx vm_userfaultfd_ctx)
+		    struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
+		    bool mm_view_shared)
 {
-	if (is_mergeable_vma(vma, file, vm_flags, vm_userfaultfd_ctx) &&
+	if (is_mergeable_vma(vma, file, vm_flags, vm_userfaultfd_ctx,
+			     mm_view_shared) &&
 	    is_mergeable_anon_vma(anon_vma, vma->anon_vma, vma)) {
 		pgoff_t vm_pglen;
 		vm_pglen = vma_pages(vma);
@@ -1160,7 +1200,8 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 			unsigned long end, unsigned long vm_flags,
 			struct anon_vma *anon_vma, struct file *file,
 			pgoff_t pgoff, struct mempolicy *policy,
-			struct vm_userfaultfd_ctx vm_userfaultfd_ctx)
+			struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
+			bool mm_view_shared)
 {
 	pgoff_t pglen = (end - addr) >> PAGE_SHIFT;
 	struct vm_area_struct *area, *next;
@@ -1190,7 +1231,8 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 			mpol_equal(vma_policy(prev), policy) &&
 			can_vma_merge_after(prev, vm_flags,
 					    anon_vma, file, pgoff,
-					    vm_userfaultfd_ctx)) {
+					    vm_userfaultfd_ctx,
+					    mm_view_shared)) {
 		/*
 		 * OK, it can.  Can we now merge in the successor as well?
 		 */
@@ -1199,7 +1241,8 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 				can_vma_merge_before(next, vm_flags,
 						     anon_vma, file,
 						     pgoff+pglen,
-						     vm_userfaultfd_ctx) &&
+						     vm_userfaultfd_ctx,
+						     mm_view_shared) &&
 				is_mergeable_anon_vma(prev->anon_vma,
 						      next->anon_vma, NULL)) {
 							/* cases 1, 6 */
@@ -1222,7 +1265,8 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 			mpol_equal(policy, vma_policy(next)) &&
 			can_vma_merge_before(next, vm_flags,
 					     anon_vma, file, pgoff+pglen,
-					     vm_userfaultfd_ctx)) {
+					     vm_userfaultfd_ctx,
+					     mm_view_shared)) {
 		if (prev && addr < prev->vm_end)	/* case 4 */
 			err = __vma_adjust(prev, prev->vm_start,
 					 addr, prev->vm_pgoff, NULL, next);
@@ -1294,7 +1338,8 @@ static struct anon_vma *reusable_anon_vma(struct vm_area_struct *old, struct vm_
 	if (anon_vma_compatible(a, b)) {
 		struct anon_vma *anon_vma = READ_ONCE(old->anon_vma);
 
-		if (anon_vma && list_is_singular(&old->anon_vma_chain))
+		if (anon_vma && (mm_has_views(old->vm_mm) ||
+				 list_is_singular(&old->anon_vma_chain)))
 			return anon_vma;
 	}
 	return NULL;
@@ -1572,11 +1617,24 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 			vm_flags |= VM_NORESERVE;
 	}
 
-	addr = mmap_region(file, addr, len, vm_flags, pgoff, uf);
+	addr = mmap_region(mm, file, addr, len, vm_flags, pgoff, uf);
 	if (!IS_ERR_VALUE(addr) &&
 	    ((vm_flags & VM_LOCKED) ||
 	     (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE))
 		*populate = len;
+
+	/* Do the same for all as_generations */
+	if (mm_has_views(mm)) {
+		struct mm_struct *mm_cursor;
+		unsigned long other_addr;
+
+		list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+			other_addr = mmap_region(mm_cursor, file, addr, len,
+						 vm_flags, pgoff, uf);
+			BUG_ON(other_addr != addr);
+		}
+	}
+
 	return addr;
 }
 
@@ -1713,15 +1771,15 @@ static inline int accountable_mapping(struct file *file, vm_flags_t vm_flags)
 	return (vm_flags & (VM_NORESERVE | VM_SHARED | VM_WRITE)) == VM_WRITE;
 }
 
-unsigned long mmap_region(struct file *file, unsigned long addr,
-		unsigned long len, vm_flags_t vm_flags, unsigned long pgoff,
-		struct list_head *uf)
+unsigned long mmap_region(struct mm_struct *mm, struct file *file,
+		unsigned long addr, unsigned long len, vm_flags_t vm_flags,
+		unsigned long pgoff, struct list_head *uf)
 {
-	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma, *prev, *merge;
 	int error;
 	struct rb_node **rb_link, *rb_parent;
 	unsigned long charged = 0;
+	bool mm_view_shared = true; /* FIXME (mm_view) */
 
 	/* Check against address space limit. */
 	if (!may_expand_vm(mm, vm_flags, len >> PAGE_SHIFT)) {
@@ -1755,7 +1813,8 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 	 * Can we just expand an old mapping?
 	 */
 	vma = vma_merge(mm, prev, addr, addr + len, vm_flags,
-			NULL, file, pgoff, NULL, NULL_VM_UFFD_CTX);
+			NULL, file, pgoff, NULL, NULL_VM_UFFD_CTX,
+			mm_view_shared);
 	if (vma)
 		goto out;
 
@@ -1804,7 +1863,8 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 		 */
 		if (unlikely(vm_flags != vma->vm_flags && prev)) {
 			merge = vma_merge(mm, prev, vma->vm_start, vma->vm_end, vma->vm_flags,
-				NULL, vma->vm_file, vma->vm_pgoff, NULL, NULL_VM_UFFD_CTX);
+				NULL, vma->vm_file, vma->vm_pgoff, NULL, NULL_VM_UFFD_CTX,
+				mm_view_shared);
 			if (merge) {
 				/* ->mmap() can change vma->vm_file and fput the original file. So
 				 * fput the vma->vm_file here or we would add an extra fput for file
@@ -1844,6 +1904,8 @@ unmap_writable:
 		mapping_unmap_writable(file->f_mapping);
 	file = vma->vm_file;
 out:
+	vma->mm_view_shared = mm_view_shared;
+
 	perf_event_mmap(vma);
 
 	vm_stat_account(mm, vm_flags, len >> PAGE_SHIFT);
@@ -2892,7 +2954,20 @@ int __do_munmap(struct mm_struct *mm, unsigned long start, size_t len,
 int do_munmap(struct mm_struct *mm, unsigned long start, size_t len,
 	      struct list_head *uf)
 {
-	return __do_munmap(mm, start, len, uf, false);
+	int ret;
+	ret = __do_munmap(mm, start, len, uf, false);
+
+	/* Do the same for all as_generations */
+	if (mm_has_views(mm)) {
+		struct mm_struct *mm_cursor;
+		int other_ret;
+
+		list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+			other_ret = __do_munmap(mm_cursor, start, len, uf, false);
+			BUG_ON(other_ret);
+		}
+	}
+	return ret;
 }
 
 static int __vm_munmap(unsigned long start, size_t len, bool downgrade)
@@ -2905,6 +2980,16 @@ static int __vm_munmap(unsigned long start, size_t len, bool downgrade)
 		return -EINTR;
 
 	ret = __do_munmap(mm, start, len, &uf, downgrade);
+	/* Do the same for all as_generations */
+	if (mm_has_views(mm)) {
+		struct mm_struct *mm_cursor;
+		int other_ret;
+
+		list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+			other_ret = __do_munmap(mm_cursor, start, len, &uf, false);
+			BUG_ON(other_ret);
+		}
+	}
 	/*
 	 * Returning 1 indicates mmap_lock is downgraded.
 	 * But 1 is not legal return value of vm_munmap() and munmap(), reset
@@ -3019,9 +3104,9 @@ out:
  *  anonymous maps.  eventually we may be able to do some
  *  brk-specific accounting here.
  */
-static int do_brk_flags(unsigned long addr, unsigned long len, unsigned long flags, struct list_head *uf)
+static int do_brk_flags(struct mm_struct *mm, unsigned long addr, unsigned long len,
+			unsigned long flags, struct list_head *uf)
 {
-	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma, *prev;
 	struct rb_node **rb_link, *rb_parent;
 	pgoff_t pgoff = addr >> PAGE_SHIFT;
@@ -3057,7 +3142,8 @@ static int do_brk_flags(unsigned long addr, unsigned long len, unsigned long fla
 
 	/* Can we just expand an old private anonymous mapping? */
 	vma = vma_merge(mm, prev, addr, addr + len, flags,
-			NULL, NULL, pgoff, NULL, NULL_VM_UFFD_CTX);
+			NULL, NULL, pgoff, NULL, NULL_VM_UFFD_CTX,
+			mm_has_views(mm));
 	if (vma)
 		goto out;
 
@@ -3075,6 +3161,7 @@ static int do_brk_flags(unsigned long addr, unsigned long len, unsigned long fla
 	vma->vm_end = addr + len;
 	vma->vm_pgoff = pgoff;
 	vma->vm_flags = flags;
+	vma->mm_view_shared = true;
 	vma->vm_page_prot = vm_get_page_prot(flags);
 	vma_link(mm, vma, prev, rb_link, rb_parent);
 out:
@@ -3104,7 +3191,9 @@ int vm_brk_flags(unsigned long addr, unsigned long request, unsigned long flags)
 	if (mmap_write_lock_killable(mm))
 		return -EINTR;
 
-	ret = do_brk_flags(addr, len, flags, &uf);
+	ret = do_brk_flags(mm, addr, len, flags, &uf);
+	/* FIXME (mm_view) This should not be called with mm views */
+	BUG_ON(mm_has_views(mm));
 	populate = ((mm->def_flags & VM_LOCKED) != 0);
 	mmap_write_unlock(mm);
 	userfaultfd_unmap_complete(mm, &uf);
@@ -3219,6 +3308,10 @@ int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
 	}
 
 	vma_link(mm, vma, prev, rb_link, rb_parent);
+
+	/* FIXME (mm_view) This should not be called with mm views */
+	BUG_ON(mm_has_views(mm));
+
 	return 0;
 }
 
@@ -3250,7 +3343,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 		return NULL;	/* should never get here */
 	new_vma = vma_merge(mm, prev, addr, addr + len, vma->vm_flags,
 			    vma->anon_vma, vma->vm_file, pgoff, vma_policy(vma),
-			    vma->vm_userfaultfd_ctx);
+			    vma->vm_userfaultfd_ctx, vma->mm_view_shared);
 	if (new_vma) {
 		/*
 		 * Source vma may have been merged into new_vma
@@ -3508,7 +3601,7 @@ static void vm_lock_anon_vma(struct mm_struct *mm, struct anon_vma *anon_vma)
 		 * The LSB of head.next can't change from under us
 		 * because we hold the mm_all_locks_mutex.
 		 */
-		down_write_nest_lock(&anon_vma->root->rwsem, &mm->mmap_lock);
+		down_write_nest_lock(&anon_vma->root->rwsem, &mm->common->mmap_lock);
 		/*
 		 * We can safely modify head.next after taking the
 		 * anon_vma->root->rwsem. If some other vma in this mm shares
@@ -3538,7 +3631,7 @@ static void vm_lock_mapping(struct mm_struct *mm, struct address_space *mapping)
 		 */
 		if (test_and_set_bit(AS_MM_ALL_LOCKS, &mapping->flags))
 			BUG();
-		down_write_nest_lock(&mapping->i_mmap_rwsem, &mm->mmap_lock);
+		down_write_nest_lock(&mapping->i_mmap_rwsem, &mm->common->mmap_lock);
 	}
 }
 

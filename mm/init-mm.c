@@ -16,6 +16,12 @@
 #define INIT_MM_CONTEXT(name)
 #endif
 
+struct mm_common init_mm_common = {
+	MMAP_LOCK_INITIALIZER(init_mm_common)
+	.base = &init_mm,
+	.next_view_id = 1
+};
+
 /*
  * For dynamically allocated mm_structs, there is a dynamically sized cpumask
  * at the end of the structure, the size of which depends on the maximum CPU
@@ -32,7 +38,9 @@ struct mm_struct init_mm = {
 	.mm_users	= ATOMIC_INIT(2),
 	.mm_count	= ATOMIC_INIT(1),
 	.write_protect_seq = SEQCNT_ZERO(init_mm.write_protect_seq),
-	MMAP_LOCK_INITIALIZER(init_mm)
+	.common		= &init_mm_common,
+	.view_id	= 0,
+	.siblings	= LIST_HEAD_INIT(init_mm.siblings),
 	.page_table_lock =  __SPIN_LOCK_UNLOCKED(init_mm.page_table_lock),
 	.arg_lock	=  __SPIN_LOCK_UNLOCKED(init_mm.arg_lock),
 	.mmlist		= LIST_HEAD_INIT(init_mm.mmlist),

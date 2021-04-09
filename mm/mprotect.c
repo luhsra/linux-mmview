@@ -464,7 +464,7 @@ mprotect_fixup(struct vm_area_struct *vma, struct vm_area_struct **pprev,
 	pgoff = vma->vm_pgoff + ((start - vma->vm_start) >> PAGE_SHIFT);
 	*pprev = vma_merge(mm, *pprev, start, end, newflags,
 			   vma->anon_vma, vma->vm_file, pgoff, vma_policy(vma),
-			   vma->vm_userfaultfd_ctx);
+			   vma->vm_userfaultfd_ctx, vma->mm_view_shared);
 	if (*pprev) {
 		vma = *pprev;
 		VM_WARN_ON((vma->vm_flags ^ newflags) & ~VM_SOFTDIRTY);
@@ -522,9 +522,11 @@ fail:
 static int do_mprotect_pkey(unsigned long start, size_t len,
 		unsigned long prot, int pkey)
 {
-	unsigned long nstart, end, tmp, reqprot;
-	struct vm_area_struct *vma, *prev;
+	struct mm_struct *mm = current->mm;
+	unsigned long nstart, end, tmp, reqprot, org_start, org_end;
+	struct vm_area_struct *vma, *prev, *tmpvma;
 	int error = -EINVAL;
+	bool sync_views = false;
 	const int grows = prot & (PROT_GROWSDOWN|PROT_GROWSUP);
 	const bool rier = (current->personality & READ_IMPLIES_EXEC) &&
 				(prot & PROT_READ);
@@ -548,7 +550,7 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 
 	reqprot = prot;
 
-	if (mmap_write_lock_killable(current->mm))
+	if (mmap_write_lock_killable(mm))
 		return -EINTR;
 
 	/*
@@ -556,13 +558,31 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 	 * them use it here.
 	 */
 	error = -EINVAL;
-	if ((pkey != -1) && !mm_pkey_is_allocated(current->mm, pkey))
+	if ((pkey != -1) && !mm_pkey_is_allocated(mm, pkey))
 		goto out;
 
-	vma = find_vma(current->mm, start);
+	vma = find_vma(mm, start);
 	error = -ENOMEM;
 	if (!vma)
 		goto out;
+
+		/* Make sure that all those VMAs are either shared between as_generations or not */
+	tmpvma = vma;
+	while (tmpvma && tmpvma->vm_start < end) {
+		if (vma->mm_view_shared != tmpvma->mm_view_shared) {
+			/* FIXME (mm_view) */
+			printk(KERN_INFO "as_generation: mprotect: inconsistent sharing\n");
+			error = -EACCES;
+			goto out;
+		}
+		tmpvma = tmpvma->vm_next;
+	}
+	if (vma->mm_view_shared)
+		sync_views = true;
+
+	org_start = start;
+	org_end = end;
+again:
 	prev = vma->vm_prev;
 	if (unlikely(grows & PROT_GROWSDOWN)) {
 		if (vma->vm_start >= end)
@@ -642,7 +662,7 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 		if (nstart < prev->vm_end)
 			nstart = prev->vm_end;
 		if (nstart >= end)
-			goto out;
+			break;
 
 		vma = prev->vm_next;
 		if (!vma || vma->vm_start != nstart) {
@@ -651,6 +671,18 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 		}
 		prot = reqprot;
 	}
+
+	mm = list_next_entry(mm, siblings);
+	if (sync_views && mm != current->mm) {
+		start = org_start;
+		end = org_end;
+		vma = find_vma(mm, start);
+		error = -ENOMEM;
+		if (!vma)
+			goto out;
+		goto again;
+	}
+
 out:
 	mmap_write_unlock(current->mm);
 	return error;
