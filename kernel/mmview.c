@@ -11,6 +11,7 @@
 SYSCALL_DEFINE0(mmview_create)
 {
 	struct mm_struct *new_mm;
+	long id;
 
 	vmacache_flush(current);
 
@@ -26,7 +27,10 @@ SYSCALL_DEFINE0(mmview_create)
 	printk(KERN_INFO "mm_view: mm_users: %d, mm_count: %d\n",
 	       atomic_read(&new_mm->mm_users), atomic_read(&new_mm->mm_count));
 
-	return new_mm->view_id;
+	id = new_mm->view_id;
+	mmput(new_mm);
+
+	return id;
 
 fail_nomem:
 	return -ENOMEM;
@@ -50,7 +54,8 @@ SYSCALL_DEFINE1(mmview_migrate, int, id)
 		if (new_mm->view_id == id)
 			break;
 	}
-	if (!new_mm || new_mm->view_id != id) {
+	if (!new_mm || new_mm->view_id != id ||
+	    test_bit(MMVIEW_REMOVED, &new_mm->view_flags)) {
 		mmap_read_unlock(old_mm);
 		return -EINVAL;
 	}
@@ -75,11 +80,12 @@ SYSCALL_DEFINE1(mmview_migrate, int, id)
 	local_irq_restore(flags);
 	old_id = old_mm->view_id;
 	task_unlock(current);
-	mmput(old_mm);
 
 	printk(KERN_INFO "DEBUG: old users: %d\n", atomic_read(&old_mm->mm_users));
 	printk(KERN_INFO "DEBUG: new users: %d\n", atomic_read(&new_mm->mm_users));
 	printk(KERN_INFO "DEBUG: common users: %d\n", atomic_read(&new_mm->common->users));
+
+	mmput(old_mm);
 
 	printk(KERN_INFO "old_id: %llu\n", old_id);
 	return old_id;
@@ -173,6 +179,46 @@ out:
 
 SYSCALL_DEFINE1(mmview_delete, int, id)
 {
+	struct mm_struct *current_mm = current->mm;
+	struct mm_struct *requested_mm;
+
 	printk(KERN_INFO "DEBUG: mmview_delete\n");
-	return -EPERM;
+
+	if (id <= 0)
+		return -EINVAL;
+
+	/* Write lock, in order to avoid concurrent migrations */
+	mmap_write_lock(current_mm);
+
+	list_for_each_entry(requested_mm, &current_mm->siblings, siblings) {
+		if (requested_mm->view_id == id)
+			break;
+	}
+
+	if (!requested_mm || requested_mm->view_id != id ||
+	    test_bit(MMVIEW_REMOVED, &requested_mm->view_flags))
+		goto fail;
+
+	mmget(requested_mm);
+	set_bit(MMVIEW_REMOVED, &requested_mm->view_flags);
+	mmap_write_unlock(current_mm);
+
+	if (atomic_read(&requested_mm->mm_users) > 0) {
+		/* The view will no longer be accessible from the system calls,
+		 * but it will be kept in the list, until the last task stops
+		 * using it and calls mmput */
+		printk(KERN_INFO "DEBUG: mm still has %d users\n",
+		       atomic_read(&requested_mm->mm_users));
+	}
+
+	mmput(requested_mm);
+
+	printk(KERN_INFO "DEBUG: deleted mm %d\n", id);
+
+	return 0;
+
+fail:
+	mmap_write_unlock(current_mm);
+	printk(KERN_INFO "DEBUG: unable to find the requested mm\n");
+	return -EINVAL;
 }

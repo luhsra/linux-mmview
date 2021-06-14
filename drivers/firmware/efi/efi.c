@@ -66,6 +66,7 @@ struct mm_struct efi_mm = {
 	.write_protect_seq      = SEQCNT_ZERO(efi_mm.write_protect_seq),
 	.common			= &efi_mm_common,
 	.view_id		= 0,
+	.view_flags		= 0,
 	.siblings		= LIST_HEAD_INIT(efi_mm.siblings),
 	.page_table_lock	= __SPIN_LOCK_UNLOCKED(efi_mm.page_table_lock),
 	.mmlist			= LIST_HEAD_INIT(efi_mm.mmlist),

@@ -40,6 +40,7 @@ struct mm_struct init_mm = {
 	.write_protect_seq = SEQCNT_ZERO(init_mm.write_protect_seq),
 	.common		= &init_mm_common,
 	.view_id	= 0,
+	.view_flags	= 0,
 	.siblings	= LIST_HEAD_INIT(init_mm.siblings),
 	.page_table_lock =  __SPIN_LOCK_UNLOCKED(init_mm.page_table_lock),
 	.arg_lock	=  __SPIN_LOCK_UNLOCKED(init_mm.arg_lock),

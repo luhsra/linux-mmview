@@ -765,7 +765,10 @@ static __latent_entropy int mmview_dup_mmap(struct mm_struct *mm,
 	/* a new mm has just been created */
 	retval = arch_dup_mmap(oldmm, mm);
 
+	/* Everything set up */
+	/* It is now safe to connect it to common and inc common->users */
 	mm_common_connect(oldmm->common, mm);
+	atomic_inc(&oldmm->common->users);
 out:
 	flush_tlb_mm(oldmm);
 	mmap_write_unlock(oldmm);
@@ -1207,17 +1210,17 @@ static void mm_common_connect(struct mm_common *common, struct mm_struct *mm)
 }
 
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
-	struct user_namespace *user_ns, int initial_users)
+	struct user_namespace *user_ns)
 {
 	mm->mmap = NULL;
 	mm->mm_rb = RB_ROOT;
 	mm->vmacache_seqnum = 0;
-	atomic_set(&mm->mm_users, initial_users);
+	atomic_set(&mm->mm_users, 1);
 	atomic_set(&mm->mm_count, 1);
 	seqcount_init(&mm->write_protect_seq);
 	mm->common = NULL;
 	mm->view_id = 0;
-	INIT_LIST_HEAD(&mm->views);
+	mm->view_flags = 0;
 	INIT_LIST_HEAD(&mm->siblings);
 	INIT_LIST_HEAD(&mm->mmlist);
 	mm->core_state = NULL;
@@ -1283,7 +1286,7 @@ struct mm_struct *mm_alloc(void)
 	if (!common)
 		goto fail_nomem_common;
 
-	mm = mm_init(mm, current, current_user_ns(), 1);
+	mm = mm_init(mm, current, current_user_ns());
 	if (!mm)
 		goto fail_nomem;
 
@@ -1319,8 +1322,7 @@ static inline void __mmput(struct mm_struct *mm)
 	mmdrop(mm);
 }
 
-static inline void mmput_all(struct mm_struct *mm) {
-	struct mm_common *common = mm->common;
+static inline void mmput_all(struct mm_common *common) {
 	struct mm_struct *base = common->base;
 	struct mm_struct *sibling, *next;
 	list_for_each_entry_safe(sibling, next, &base->siblings, siblings) {
@@ -1337,42 +1339,69 @@ static inline void mmput_all(struct mm_struct *mm) {
  */
 void mmput(struct mm_struct *mm)
 {
-	bool mm_users;
-	bool common_users;
+	struct mm_common *common = mm->common;
 
 	might_sleep();
 
 	/*
 	 * Let mm_users get 0 but do not tear down the mm (and do not drop it)
-	 * when mm->common still has users.
+	 * if it is exposed to the userspace and mm->common still has users.
 	 * We may resurrect it later, when it is used again by some task.
 	 * Also we cannot safely put it down because it may still be used
 	 * by sibling mms.
 	 */
-	mm_users = atomic_dec_and_test(&mm->mm_users);
-	common_users = atomic_dec_and_test(&mm->common->users);
-	if (mm_users && common_users)
-		mmput_all(mm);
+	if (atomic_dec_and_test(&mm->mm_users) &&
+	    test_bit(MMVIEW_REMOVED, &mm->view_flags) &&
+	    mm != common->base) {
+		mmap_write_lock(mm);
+		list_del(&mm->siblings);
+		mmap_write_unlock(mm);
+		__mmput(mm);
+	}
+
+	if (atomic_dec_and_test(&common->users))
+		mmput_all(common);
 }
 EXPORT_SYMBOL_GPL(mmput);
 
 #ifdef CONFIG_MMU
-static void mmput_async_fn(struct work_struct *work)
+static void mmput_all_async_fn(struct work_struct *work)
 {
 	struct mm_struct *mm = container_of(work, struct mm_struct,
 					    async_put_work);
 
-	mmput_all(mm);
+	mmput_all(mm->common);
+}
+
+static void mmput_view_async_fn(struct work_struct *work)
+{
+	struct mm_struct *mm = container_of(work, struct mm_struct,
+					    async_put_work);
+	struct mm_common *common = mm->common;
+
+	mmap_write_lock(mm);
+	list_del(&mm->siblings);
+	mmap_write_unlock(mm);
+	__mmput(mm);
+
+	if (atomic_dec_and_test(&common->users))
+		mmput_all(common);
 }
 
 void mmput_async(struct mm_struct *mm)
 {
+	struct mm_common *common = mm->common;
+	struct mm_struct *base = mm->common->base;
+
 	/* see mmput */
-	bool mm_users = atomic_dec_and_test(&mm->mm_users);
-	bool common_users = atomic_dec_and_test(&mm->common->users);
-	if (mm_users && common_users) {
-		INIT_WORK(&mm->async_put_work, mmput_async_fn);
+	if (atomic_dec_and_test(&mm->mm_users) &&
+	    test_bit(MMVIEW_REMOVED, &mm->view_flags) &&
+	    mm != base) {
+		INIT_WORK(&mm->async_put_work, mmput_view_async_fn);
 		schedule_work(&mm->async_put_work);
+	} else if (atomic_dec_and_test(&common->users)) {
+		INIT_WORK(&base->async_put_work, mmput_all_async_fn);
+		schedule_work(&base->async_put_work);
 	}
 }
 #endif
@@ -1670,7 +1699,7 @@ struct mm_struct *mmview_dup_mm(struct task_struct *tsk,
 
 	memcpy(mm, oldmm, sizeof(*mm));
 
-	if (!mm_init(mm, tsk, mm->user_ns, 0))
+	if (!mm_init(mm, tsk, mm->user_ns))
 		goto fail_nomem;
 
 	/*
@@ -1685,18 +1714,17 @@ struct mm_struct *mmview_dup_mm(struct task_struct *tsk,
 	mm->hiwater_rss = get_mm_rss(mm);
 	mm->hiwater_vm = mm->total_vm;
 
-	if (mm->binfmt && !try_module_get(mm->binfmt->module)) {
-		BUG(); /* FIXME: mm is already in the siblings list */
-		goto free_pt;
-	}
-
 	return mm;
 
 free_pt:
 	/* don't put binfmt in mmput, we haven't got module yet */
 	mm->binfmt = NULL;
 	mm_init_owner(mm, NULL);
-	__mmput(mm);  /* mm_users == 0 at this point */
+
+	/* mm is not connected to common when mmview_dup_mmap fails */
+	BUG_ON(mm->common);
+	BUG_ON(!atomic_dec_and_test(&mm->mm_users));
+	__mmput(mm);
 
 fail_nomem:
 	return NULL;
@@ -1729,7 +1757,7 @@ static struct mm_struct *dup_mm(struct task_struct *tsk,
 	if (!common)
 		goto fail_nomem_common;
 
-	if (!mm_init(mm, tsk, mm->user_ns, 1))
+	if (!mm_init(mm, tsk, mm->user_ns))
 		goto fail_nomem;
 
 	mm_common_connect(common, mm);

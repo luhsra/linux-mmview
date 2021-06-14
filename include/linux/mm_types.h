@@ -473,7 +473,7 @@ struct mm_struct {
 					     */
 		struct mm_common *common;
 		struct list_head siblings;
-		struct list_head views;
+		unsigned long view_flags; /* Must use atomic bitops to access */
 		u64 view_id;
 
 		struct list_head mmlist; /* List of maybe swapped mm's.	These
