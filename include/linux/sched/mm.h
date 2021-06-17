@@ -67,12 +67,16 @@ static inline void mmdrop(struct mm_struct *mm)
  */
 static inline void mmget(struct mm_struct *mm)
 {
+	atomic_inc(&mm->common->users);
 	atomic_inc(&mm->mm_users);
 }
 
 static inline bool mmget_not_zero(struct mm_struct *mm)
 {
-	return atomic_inc_not_zero(&mm->mm_users);
+	bool ret = atomic_inc_not_zero(&mm->common->users);
+	if (ret)
+		atomic_inc(&mm->mm_users);
+	return ret;
 }
 
 /* mmput gets rid of the mappings and all user-space */

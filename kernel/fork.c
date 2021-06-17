@@ -141,6 +141,8 @@ DEFINE_PER_CPU(unsigned long, process_counts) = 0;
 
 __cacheline_aligned DEFINE_RWLOCK(tasklist_lock);  /* outer */
 
+static void mm_common_connect(struct mm_common *common, struct mm_struct *mm);
+
 #ifdef CONFIG_PROVE_RCU
 int lockdep_tasklist_lock_is_held(void)
 {
@@ -763,11 +765,7 @@ static __latent_entropy int mmview_dup_mmap(struct mm_struct *mm,
 	/* a new mm has just been created */
 	retval = arch_dup_mmap(oldmm, mm);
 
-	// Add mm to the siblings list
-	mm->common = oldmm->common;
-	list_add_tail(&mm->siblings,
-		      &oldmm->siblings);
-	mm->view_id = oldmm->common->next_view_id++;
+	mm_common_connect(oldmm->common, mm);
 out:
 	flush_tlb_mm(oldmm);
 	mmap_write_unlock(oldmm);
@@ -1183,27 +1181,43 @@ static void mm_init_uprobes_state(struct mm_struct *mm)
 #endif
 }
 
-static struct mm_common *mm_common_new(struct mm_struct *base) {
+static struct mm_common *mm_common_new(struct mm_struct *base)
+{
 	struct mm_common *common = kzalloc(sizeof(struct mm_common), GFP_KERNEL);
 	if (!common)
 		return NULL;
-	mmap_init_lock(common);
+
 	common->base = base;
 	common->next_view_id = 0;
+	mmap_init_lock(common);
+	atomic_set(&common->users, 1);
 	return common;
 }
 
+/*
+ * Requires write locked mmap_lock
+ */
+static void mm_common_connect(struct mm_common *common, struct mm_struct *mm)
+{
+	mm->common = common;
+	mm->view_id = common->next_view_id++;
+
+	if (mm != common->base)
+		list_add_tail(&mm->siblings, &common->base->siblings);
+}
+
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
-	struct user_namespace *user_ns, struct mm_common *common, u64 view_id)
+	struct user_namespace *user_ns, int initial_users)
 {
 	mm->mmap = NULL;
 	mm->mm_rb = RB_ROOT;
 	mm->vmacache_seqnum = 0;
-	atomic_set(&mm->mm_users, 1);
+	atomic_set(&mm->mm_users, initial_users);
 	atomic_set(&mm->mm_count, 1);
 	seqcount_init(&mm->write_protect_seq);
-	mm->common = common;
-	mm->view_id = view_id;
+	mm->common = NULL;
+	mm->view_id = 0;
+	INIT_LIST_HEAD(&mm->views);
 	INIT_LIST_HEAD(&mm->siblings);
 	INIT_LIST_HEAD(&mm->mmlist);
 	mm->core_state = NULL;
@@ -1269,11 +1283,12 @@ struct mm_struct *mm_alloc(void)
 	if (!common)
 		goto fail_nomem_common;
 
-	mm = mm_init(mm, current, current_user_ns(),
-		     common, common->next_view_id++);
+	mm = mm_init(mm, current, current_user_ns(), 1);
 	if (!mm)
 		goto fail_nomem;
-	mmget(mm); /* common->base */
+
+	mm_common_connect(common, mm);
+
 	return mm;
 
 fail_nomem:
@@ -1303,15 +1318,42 @@ static inline void __mmput(struct mm_struct *mm)
 	mmdrop(mm);
 }
 
+static inline void mmput_all(struct mm_struct *mm) {
+	struct mm_common *common = mm->common;
+	struct mm_struct *base = common->base;
+	struct mm_struct *sibling, *next;
+	list_for_each_entry_safe(sibling, next, &base->siblings, siblings) {
+		list_del(&sibling->siblings);
+		sibling->common = NULL;
+		__mmput(sibling);
+	}
+	list_del(&base->siblings);
+	base->common = NULL;
+	__mmput(base);
+	kfree(common);
+}
+
 /*
  * Decrement the use count and release all resources for an mm.
  */
 void mmput(struct mm_struct *mm)
 {
+	bool mm_users;
+	bool common_users;
+
 	might_sleep();
 
-	if (atomic_dec_and_test(&mm->mm_users))
-		__mmput(mm);
+	/*
+	 * Let mm_users get 0 but do not tear down the mm (and do not drop it)
+	 * when mm->common still has users.
+	 * We may resurrect it later, when it is used again by some task.
+	 * Also we cannot safely put it down because it may still be used
+	 * by sibling mms.
+	 */
+	mm_users = atomic_dec_and_test(&mm->mm_users);
+	common_users = atomic_dec_and_test(&mm->common->users);
+	if (mm_users && common_users)
+		mmput_all(mm);
 }
 EXPORT_SYMBOL_GPL(mmput);
 
@@ -1321,12 +1363,15 @@ static void mmput_async_fn(struct work_struct *work)
 	struct mm_struct *mm = container_of(work, struct mm_struct,
 					    async_put_work);
 
-	__mmput(mm);
+	mmput_all(mm);
 }
 
 void mmput_async(struct mm_struct *mm)
 {
-	if (atomic_dec_and_test(&mm->mm_users)) {
+	/* see mmput */
+	bool mm_users = atomic_dec_and_test(&mm->mm_users);
+	bool common_users = atomic_dec_and_test(&mm->common->users);
+	if (mm_users && common_users) {
 		INIT_WORK(&mm->async_put_work, mmput_async_fn);
 		schedule_work(&mm->async_put_work);
 	}
@@ -1626,9 +1671,13 @@ struct mm_struct *mmview_dup_mm(struct task_struct *tsk,
 
 	memcpy(mm, oldmm, sizeof(*mm));
 
-	/* common and view_id gets set in mmview_dup_mmap */
-	if (!mm_init(mm, tsk, mm->user_ns, NULL, 0))
+	if (!mm_init(mm, tsk, mm->user_ns, 0))
 		goto fail_nomem;
+
+	/*
+	 * mm_common_connect is called in mmview_dup_mmap
+	 * as the shared oldmm->common must be protected by the mmap_lock.
+	 */
 
 	err = mmview_dup_mmap(mm, oldmm);
 	if (err)
@@ -1681,8 +1730,10 @@ static struct mm_struct *dup_mm(struct task_struct *tsk,
 	if (!common)
 		goto fail_nomem_common;
 
-	if (!mm_init(mm, tsk, mm->user_ns, common, common->next_view_id++))
+	if (!mm_init(mm, tsk, mm->user_ns, 1))
 		goto fail_nomem;
+
+	mm_common_connect(common, mm);
 
 	err = dup_mmap(mm, oldmm);
 	if (err)
@@ -1694,7 +1745,6 @@ static struct mm_struct *dup_mm(struct task_struct *tsk,
 	if (mm->binfmt && !try_module_get(mm->binfmt->module))
 		goto free_pt;
 
-	mmget(mm); /* common->base */
 	return mm;
 
 free_pt:

@@ -2,7 +2,6 @@
 #ifndef _LINUX_MM_TYPES_H
 #define _LINUX_MM_TYPES_H
 
-#include <linux/types.h>
 #include <linux/mm_types_task.h>
 
 #include <linux/auxvec.h>
@@ -406,6 +405,10 @@ struct mm_common {
 	struct mm_struct *base;
 	u64 next_view_id;
 	struct rw_semaphore mmap_lock;
+
+	/* FIXME (mm_view) there are still many occasions where
+	   mm->mm_users is queried, instead of mm->common->users */
+	atomic_t users;
 };
 
 struct kioctx_table;
@@ -470,6 +473,7 @@ struct mm_struct {
 					     */
 		struct mm_common *common;
 		struct list_head siblings;
+		struct list_head views;
 		u64 view_id;
 
 		struct list_head mmlist; /* List of maybe swapped mm's.	These

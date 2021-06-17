@@ -79,6 +79,7 @@ SYSCALL_DEFINE1(mmview_migrate, int, id)
 
 	printk(KERN_INFO "DEBUG: old users: %d\n", atomic_read(&old_mm->mm_users));
 	printk(KERN_INFO "DEBUG: new users: %d\n", atomic_read(&new_mm->mm_users));
+	printk(KERN_INFO "DEBUG: common users: %d\n", atomic_read(&new_mm->common->users));
 
 	printk(KERN_INFO "old_id: %llu\n", old_id);
 	return old_id;

@@ -810,16 +810,6 @@ void __noreturn do_exit(long code)
 	tsk->exit_code = code;
 	taskstats_exit(tsk, group_dead);
 
-	if (group_dead && tsk->mm) {
-		struct mm_struct *mm_cursor;
-		list_for_each_entry_reverse(mm_cursor,
-					    &tsk->mm->common->base->siblings,
-					    siblings) {
-			mmput(mm_cursor);
-		}
-		mmput(tsk->mm->common->base);
-	}
-
 	exit_mm();
 
 	if (group_dead)
