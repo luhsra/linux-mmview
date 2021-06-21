@@ -1697,7 +1697,7 @@ free_pt:
 	/* don't put binfmt in mmput, we haven't got module yet */
 	mm->binfmt = NULL;
 	mm_init_owner(mm, NULL);
-	mmput(mm);
+	__mmput(mm);  /* mm_users == 0 at this point */
 
 fail_nomem:
 	return NULL;
