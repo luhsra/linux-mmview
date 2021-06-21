@@ -915,7 +915,7 @@ static unsigned long do_mremap(struct mm_struct *mm, bool *downgraded,
 		int retval;
 
 		retval = __do_munmap(mm, addr+new_len, old_len - new_len,
-				     uf_unmap, true);
+				     uf_unmap, !mm_has_views(mm));
 		if (retval < 0 && old_len != new_len) {
 			ret = retval;
 			goto out;
