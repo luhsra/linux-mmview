@@ -1315,6 +1315,7 @@ static inline void __mmput(struct mm_struct *mm)
 	}
 	if (mm->binfmt)
 		module_put(mm->binfmt->module);
+	mm->common = NULL;
 	mmdrop(mm);
 }
 
@@ -1324,11 +1325,9 @@ static inline void mmput_all(struct mm_struct *mm) {
 	struct mm_struct *sibling, *next;
 	list_for_each_entry_safe(sibling, next, &base->siblings, siblings) {
 		list_del(&sibling->siblings);
-		sibling->common = NULL;
 		__mmput(sibling);
 	}
 	list_del(&base->siblings);
-	base->common = NULL;
 	__mmput(base);
 	kfree(common);
 }
