@@ -409,6 +409,7 @@ struct mm_common {
 	/* FIXME (mm_view) there are still many occasions where
 	   mm->mm_users is queried, instead of mm->common->users */
 	atomic_t users;
+	atomic_t count;
 };
 
 struct kioctx_table;

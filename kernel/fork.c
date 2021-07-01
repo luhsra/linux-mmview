@@ -852,6 +852,8 @@ void __mmdrop(struct mm_struct *mm)
 	mmu_notifier_subscriptions_destroy(mm);
 	check_mm(mm);
 	put_user_ns(mm->user_ns);
+	if (mm->common && atomic_dec_and_test(&mm->common->count))
+		kfree(mm->common);
 	free_mm(mm);
 }
 EXPORT_SYMBOL_GPL(__mmdrop);
@@ -1194,6 +1196,7 @@ static struct mm_common *mm_common_new(struct mm_struct *base)
 	common->next_view_id = 0;
 	mmap_init_lock(common);
 	atomic_set(&common->users, 1);
+	atomic_set(&common->count, 0);
 	return common;
 }
 
@@ -1202,6 +1205,8 @@ static struct mm_common *mm_common_new(struct mm_struct *base)
  */
 static void mm_common_connect(struct mm_common *common, struct mm_struct *mm)
 {
+	atomic_inc(&common->count);
+
 	mm->common = common;
 	mm->view_id = common->next_view_id++;
 
@@ -1318,7 +1323,6 @@ static inline void __mmput(struct mm_struct *mm)
 	}
 	if (mm->binfmt)
 		module_put(mm->binfmt->module);
-	mm->common = NULL;
 	mmdrop(mm);
 }
 
@@ -1331,7 +1335,6 @@ static inline void mmput_all(struct mm_common *common) {
 	}
 	list_del(&base->siblings);
 	__mmput(base);
-	kfree(common);
 }
 
 /*
