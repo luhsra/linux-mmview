@@ -713,7 +713,8 @@ static __latent_entropy int mmview_dup_mmap(struct mm_struct *mm,
 		retval = dup_userfaultfd(tmp, &uf);
 		if (retval)
 			goto fail_nomem_anon_vma_fork;
-		if (anon_vma_fork(tmp, mpnt))
+		if (mpnt->mm_view_shared ? anon_vma_clone(tmp, mpnt)
+					 : anon_vma_fork(tmp, mpnt))
 			goto fail_nomem_anon_vma_fork;
 		tmp->vm_flags &= ~(VM_LOCKED | VM_LOCKONFAULT);
 		file = tmp->vm_file;
