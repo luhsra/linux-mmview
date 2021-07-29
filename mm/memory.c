@@ -779,9 +779,6 @@ copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 	struct page *page;
 	swp_entry_t entry = pte_to_swp_entry(pte);
 
-	/* FIXME (mm_view) do mm views work with non present ptes? */
-	WARN_ON(is_mm_view && src_vma->mm_view_shared);
-
 	if (likely(!non_swap_entry(entry))) {
 		if (swap_duplicate(entry) < 0)
 			return -EIO;
@@ -3810,6 +3807,18 @@ static int mm_view_find_sibling_page(struct vm_fault *vmf, vm_fault_t *ret) {
 		return 1;
 	}
 
+	/* page_table_lock to protect against threads and __anon_vma_prepare */
+	spin_lock(&base_mm->page_table_lock);
+	if (base_vma->anon_vma && !vma->anon_vma) {
+		vma->anon_vma = base_vma->anon_vma;
+		spin_unlock(&base_mm->page_table_lock);
+		if (anon_vma_clone(vma, base_vma)) {
+			*ret = VM_FAULT_OOM;
+			return 2;
+		}
+	} else
+		spin_unlock(&base_mm->page_table_lock);
+
 	BUG_ON(base_mm == vmf->vma->vm_mm);
 	if (follow_pte(base_mm, vmf->address, &ptep, &ptl)) {
 		return 1;
@@ -3831,10 +3840,6 @@ static int mm_view_find_sibling_page(struct vm_fault *vmf, vm_fault_t *ret) {
 
 	arch_enter_lazy_mmu_mode();
 
-	if (unlikely(!pte_present(*ptep))) {
-		BUG();
-		/* FIXME (mm_view) Implement! Similar to copy_nonpresent_pte */
-	}
 	mm_view_sync_present_pte(vma, base_vma, vmf->pte, ptep,
 				 vmf->address, rss);
 
@@ -4724,11 +4729,8 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 			return do_fault(vmf);
 	}
 
-	if (!pte_present(vmf->orig_pte)) {
-		/* FIXME (mm_view) Support swapping for mm views */
-		WARN_ON(vmf->vma->vm_mm != vmf->vma->vm_mm->common->base);
+	if (!pte_present(vmf->orig_pte))
 		return do_swap_page(vmf);
-	}
 
 	if (vmf->vma->mm_view_shared) {
 		struct mm_struct *mm_cursor;
