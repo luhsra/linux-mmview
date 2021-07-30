@@ -852,8 +852,10 @@ void __mmdrop(struct mm_struct *mm)
 	mmu_notifier_subscriptions_destroy(mm);
 	check_mm(mm);
 	put_user_ns(mm->user_ns);
-	if (mm->common && atomic_dec_and_test(&mm->common->count))
+	if (mm->common && atomic_dec_and_test(&mm->common->count)) {
+		mutex_destroy(&mm->common->zapping_lock);
 		kfree(mm->common);
+	}
 	free_mm(mm);
 }
 EXPORT_SYMBOL_GPL(__mmdrop);
@@ -1195,6 +1197,7 @@ static struct mm_common *mm_common_new(struct mm_struct *base)
 	common->base = base;
 	common->next_view_id = 0;
 	mmap_init_lock(common);
+	mutex_init(&common->zapping_lock);
 	atomic_set(&common->users, 1);
 	atomic_set(&common->count, 0);
 	return common;

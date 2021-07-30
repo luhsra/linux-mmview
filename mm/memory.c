@@ -4731,22 +4731,19 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 
 	if (vmf->vma->mm_view_shared) {
-		static atomic_t as_zapping;
 		struct mm_struct *mm_cursor;
 		if (vmf->vma->vm_mm != vmf->vma->vm_mm->common->base)
 			return VM_FAULT_VIEW_RETRY;
-		/* FIXME (mm_view) remove as_zapping workaround */
-		if (atomic_cmpxchg_acquire(&as_zapping, 0, 1) != 0)
+		if (!mutex_trylock(&vmf->vma->vm_mm->common->zapping_lock))
 			return 0;
 		list_for_each_entry(mm_cursor, &vmf->vma->vm_mm->siblings,
 				    siblings) {
 			struct vm_area_struct *other_vma =
 				find_vma(mm_cursor, vmf->address);
 			WARN_ON(other_vma == NULL);
-			/* FIXME (mm_view) protect page range -- mm_write_lock */
 			zap_page_range(other_vma, vmf->address, PAGE_SIZE);
 		}
-		atomic_set_release(&as_zapping, 0);
+		mutex_unlock(&vmf->vma->vm_mm->common->zapping_lock);
 	}
 
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) {

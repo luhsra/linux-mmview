@@ -406,6 +406,8 @@ struct mm_common {
 	u64 next_view_id;
 	struct rw_semaphore mmap_lock;
 
+	struct mutex zapping_lock;
+
 	/* FIXME (mm_view) there are still many occasions where
 	   mm->mm_users is queried, instead of mm->common->users */
 	atomic_t users;
