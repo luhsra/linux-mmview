@@ -20,7 +20,9 @@ struct mm_common init_mm_common = {
 	MMAP_LOCK_INITIALIZER(init_mm_common)
 	.zapping_lock = __MUTEX_INITIALIZER(init_mm_common.zapping_lock),
 	.base = &init_mm,
-	.next_view_id = 1
+	.next_view_id = 1,
+	.users = ATOMIC_INIT(1),
+	.count = ATOMIC_INIT(1)
 };
 
 /*
