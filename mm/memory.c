@@ -4730,8 +4730,12 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 			return do_fault(vmf);
 	}
 
-	if (!pte_present(vmf->orig_pte))
-		return do_swap_page(vmf);
+	if (!pte_present(vmf->orig_pte)) {
+		vm_fault_t ret = do_swap_page(vmf);
+		if (!(ret & VM_FAULT_ERROR))
+			ret |= VM_FAULT_DONE_SWAP;
+		return ret;
+	}
 
 	if (vmf->vma->mm_view_shared) {
 		struct mm_struct *mm_cursor;
@@ -4986,6 +4990,15 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 				find_vma(vma->vm_mm->common->base, address);
 			ret = __handle_mm_fault(base_vma, address, flags);
 			__handle_mm_fault(vma, address, flags);
+		} else if (ret & VM_FAULT_DONE_SWAP &&
+			   mm_has_views(vma->vm_mm) && vma->mm_view_shared) {
+			struct mm_struct *mm_cursor;
+			list_for_each_entry(mm_cursor, &vma->vm_mm->siblings, siblings) {
+				struct vm_area_struct *vma_cursor =
+					find_vma(mm_cursor, address);
+				WARN_ON(vma_cursor == NULL);
+				__handle_mm_fault(vma_cursor, address, flags);
+			}
 		}
 	}
 
