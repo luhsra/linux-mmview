@@ -378,7 +378,7 @@ static int zap_threads(struct task_struct *tsk, struct mm_struct *mm,
 
 	spin_lock_irq(&tsk->sighand->siglock);
 	if (!signal_group_exit(tsk->signal)) {
-		mm->core_state = core_state;
+		mm->common->core_state = core_state;
 		tsk->signal->group_exit_task = tsk;
 		nr = zap_process(tsk, exit_code, 0);
 		clear_tsk_thread_flag(tsk, TIF_SIGPENDING);
@@ -388,7 +388,7 @@ static int zap_threads(struct task_struct *tsk, struct mm_struct *mm,
 		return nr;
 
 	tsk->flags |= PF_DUMPCORE;
-	if (atomic_read(&mm->mm_users) == nr + 1)
+	if (atomic_read(&mm->common->users) == nr + 1)
 		goto done;
 	/*
 	 * We should find and kill all tasks which use this mm, and we should
@@ -430,7 +430,7 @@ static int zap_threads(struct task_struct *tsk, struct mm_struct *mm,
 		for_each_thread(g, p) {
 			if (unlikely(!p->mm))
 				continue;
-			if (unlikely(p->mm == mm)) {
+			if (unlikely(p->mm->common == mm->common)) {
 				lock_task_sighand(p, &flags);
 				nr += zap_process(p, exit_code,
 							SIGNAL_GROUP_EXIT);
@@ -458,7 +458,7 @@ static int coredump_wait(int exit_code, struct core_state *core_state)
 	if (mmap_write_lock_killable(mm))
 		return -EINTR;
 
-	if (!mm->core_state)
+	if (!mm->common->core_state)
 		core_waiters = zap_threads(tsk, mm, core_state, exit_code);
 	mmap_write_unlock(mm);
 
@@ -495,7 +495,7 @@ static void coredump_finish(struct mm_struct *mm, bool core_dumped)
 	current->signal->flags = SIGNAL_GROUP_EXIT;
 	spin_unlock_irq(&current->sighand->siglock);
 
-	next = mm->core_state->dumper.next;
+	next = mm->common->core_state->dumper.next;
 	while ((curr = next) != NULL) {
 		next = curr->next;
 		task = curr->task;
@@ -508,7 +508,7 @@ static void coredump_finish(struct mm_struct *mm, bool core_dumped)
 		wake_up_process(task);
 	}
 
-	mm->core_state = NULL;
+	mm->common->core_state = NULL;
 }
 
 static bool dump_interrupted(void)

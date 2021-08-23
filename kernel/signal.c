@@ -2162,8 +2162,8 @@ static inline bool may_ptrace_stop(void)
 	 * block in TASK_TRACED. But PTRACE_EVENT_EXIT can be reported
 	 * after SIGKILL was already dequeued.
 	 */
-	if (unlikely(current->mm->core_state) &&
-	    unlikely(current->mm == current->parent->mm))
+	if (unlikely(current->mm->common->core_state) &&
+	    unlikely(current->mm->common == current->parent->mm->common))
 		return false;
 
 	return true;

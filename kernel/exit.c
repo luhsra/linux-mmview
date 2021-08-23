@@ -449,7 +449,7 @@ static void exit_mm(void)
 	 * group with ->mm != NULL.
 	 */
 	mmap_read_lock(mm);
-	core_state = mm->core_state;
+	core_state = mm->common->core_state;
 	if (core_state) {
 		struct core_thread self;
 

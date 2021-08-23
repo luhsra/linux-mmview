@@ -995,7 +995,7 @@ static int exec_mmap(struct mm_struct *mm)
 		 * checking core_state and changing tsk->mm.
 		 */
 		mmap_read_lock(old_mm);
-		if (unlikely(old_mm->core_state)) {
+		if (unlikely(old_mm->common->core_state)) {
 			mmap_read_unlock(old_mm);
 			up_write(&tsk->signal->exec_update_lock);
 			return -EINTR;

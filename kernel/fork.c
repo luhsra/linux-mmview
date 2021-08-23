@@ -1199,6 +1199,7 @@ static struct mm_common *mm_common_new(struct mm_struct *base)
 	common->next_view_id = 0;
 	mmap_init_lock(common);
 	mutex_init(&common->zapping_lock);
+	common->core_state = NULL;
 	atomic_set(&common->users, 1);
 	atomic_set(&common->count, 0);
 	return common;
@@ -1232,7 +1233,6 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	mm->view_flags = 0;
 	INIT_LIST_HEAD(&mm->siblings);
 	INIT_LIST_HEAD(&mm->mmlist);
-	mm->core_state = NULL;
 	mm_pgtables_bytes_init(mm);
 	mm->map_count = 0;
 	mm->locked_vm = 0;

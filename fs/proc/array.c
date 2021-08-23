@@ -410,7 +410,7 @@ static void task_cpus_allowed(struct seq_file *m, struct task_struct *task)
 
 static inline void task_core_dumping(struct seq_file *m, struct mm_struct *mm)
 {
-	seq_put_decimal_ull(m, "CoreDumping:\t", !!mm->core_state);
+	seq_put_decimal_ull(m, "CoreDumping:\t", !!mm->common->core_state);
 	seq_putc(m, '\n');
 }
 

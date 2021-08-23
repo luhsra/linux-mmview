@@ -408,6 +408,8 @@ struct mm_common {
 
 	struct mutex zapping_lock;
 
+	struct core_state *core_state; /* coredumping support */
+
 	/* FIXME (mm_view) there are still many occasions where
 	   mm->mm_users is queried, instead of mm->common->users */
 	atomic_t users;
@@ -524,8 +526,6 @@ struct mm_struct {
 		mm_context_t context;
 
 		unsigned long flags; /* Must use atomic bitops to access */
-
-		struct core_state *core_state; /* coredumping support */
 
 #ifdef CONFIG_AIO
 		spinlock_t			ioctx_lock;
