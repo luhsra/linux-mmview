@@ -100,7 +100,7 @@ static int vdso_mremap(const struct vm_special_mapping *sm,
 #ifdef CONFIG_TIME_NS
 static struct page *find_timens_vvar_page(struct vm_area_struct *vma)
 {
-	if (likely(vma->vm_mm == current->mm))
+	if (likely(vma->vm_mm->common == current->mm->common))
 		return current->nsproxy->time_ns->vvar_page;
 
 	/*
