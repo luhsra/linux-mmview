@@ -1198,13 +1198,49 @@ static const struct mm_walk_ops clear_refs_walk_ops = {
 	.test_walk		= clear_refs_test_walk,
 };
 
+static void clear_refs_mm(struct mm_struct *mm, enum clear_refs_types type)
+{
+	struct vm_area_struct *vma;
+	struct mmu_notifier_range range;
+	struct clear_refs_private cp = {
+		.type = type,
+	};
+
+	if (type == CLEAR_REFS_MM_HIWATER_RSS) {
+		/*
+		 * Writing 5 to /proc/pid/clear_refs resets the peak
+		 * resident set size to this mm's current rss value.
+		 */
+		reset_mm_hiwater_rss(mm);
+		return;
+	}
+
+	if (type == CLEAR_REFS_SOFT_DIRTY) {
+		for (vma = mm->mmap; vma; vma = vma->vm_next) {
+			if (!(vma->vm_flags & VM_SOFTDIRTY))
+				continue;
+			vma->vm_flags &= ~VM_SOFTDIRTY;
+			vma_set_page_prot(vma);
+		}
+
+		inc_tlb_flush_pending(mm);
+		mmu_notifier_range_init(&range, MMU_NOTIFY_SOFT_DIRTY, 0, NULL, mm, 0, -1UL);
+		mmu_notifier_invalidate_range_start(&range);
+	}
+	walk_page_range(mm, 0, mm->highest_vm_end, &clear_refs_walk_ops, &cp);
+	if (type == CLEAR_REFS_SOFT_DIRTY) {
+		mmu_notifier_invalidate_range_end(&range);
+		flush_tlb_mm(mm);
+		dec_tlb_flush_pending(mm);
+	}
+}
+
 static ssize_t clear_refs_write(struct file *file, const char __user *buf,
 				size_t count, loff_t *ppos)
 {
 	struct task_struct *task;
 	char buffer[PROC_NUMBUF];
 	struct mm_struct *mm;
-	struct vm_area_struct *vma;
 	enum clear_refs_types type;
 	int itype;
 	int rv;
@@ -1226,45 +1262,17 @@ static ssize_t clear_refs_write(struct file *file, const char __user *buf,
 		return -ESRCH;
 	mm = get_task_mm(task);
 	if (mm) {
-		struct mmu_notifier_range range;
-		struct clear_refs_private cp = {
-			.type = type,
-		};
-
+		struct mm_struct *mm_cursor;
 		if (mmap_write_lock_killable(mm)) {
 			count = -EINTR;
 			goto out_mm;
 		}
-		if (type == CLEAR_REFS_MM_HIWATER_RSS) {
-			/*
-			 * Writing 5 to /proc/pid/clear_refs resets the peak
-			 * resident set size to this mm's current rss value.
-			 */
-			reset_mm_hiwater_rss(mm);
-			goto out_unlock;
+
+		clear_refs_mm(mm, type);
+		list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+			clear_refs_mm(mm_cursor, type);
 		}
 
-		if (type == CLEAR_REFS_SOFT_DIRTY) {
-			for (vma = mm->mmap; vma; vma = vma->vm_next) {
-				if (!(vma->vm_flags & VM_SOFTDIRTY))
-					continue;
-				vma->vm_flags &= ~VM_SOFTDIRTY;
-				vma_set_page_prot(vma);
-			}
-
-			inc_tlb_flush_pending(mm);
-			mmu_notifier_range_init(&range, MMU_NOTIFY_SOFT_DIRTY,
-						0, NULL, mm, 0, -1UL);
-			mmu_notifier_invalidate_range_start(&range);
-		}
-		walk_page_range(mm, 0, mm->highest_vm_end, &clear_refs_walk_ops,
-				&cp);
-		if (type == CLEAR_REFS_SOFT_DIRTY) {
-			mmu_notifier_invalidate_range_end(&range);
-			flush_tlb_mm(mm);
-			dec_tlb_flush_pending(mm);
-		}
-out_unlock:
 		mmap_write_unlock(mm);
 out_mm:
 		mmput(mm);
