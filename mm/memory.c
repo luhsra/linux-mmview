@@ -1316,7 +1316,7 @@ int
 		return 0;
 
 	if (is_vm_hugetlb_page(src_vma))
-		return copy_hugetlb_page_range(dst_mm, src_mm, src_vma);
+		return copy_hugetlb_page_range(dst_mm, src_mm, src_vma, is_mm_view);
 
 	if (unlikely(src_vma->vm_flags & VM_PFNMAP)) {
 		/*
@@ -4980,9 +4980,13 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 		mem_cgroup_enter_user_fault();
 
 	if (unlikely(is_vm_hugetlb_page(vma))) {
-		/* FIXME (mm_view) missing hugepage support */
-		WARN_ON(vma->vm_mm != vma->vm_mm->common->base);
 		ret = hugetlb_fault(vma->vm_mm, vma, address, flags);
+		if (ret == VM_FAULT_VIEW_RETRY) {
+			struct vm_area_struct *base_vma =
+				find_vma(vma->vm_mm->common->base, address);
+			ret = hugetlb_fault(base_vma->vm_mm, base_vma, address, flags);
+			hugetlb_fault(vma->vm_mm, vma, address, flags);
+		}
 	} else {
 		ret = __handle_mm_fault(vma, address, flags);
 		if (ret == VM_FAULT_VIEW_RETRY) {

@@ -4267,13 +4267,39 @@ hugetlb_install_page(struct vm_area_struct *vma, pte_t *ptep, unsigned long addr
 	SetHPageMigratable(new_page);
 }
 
+/*
+ * This is used in copy_hugetlb_page_range in the COW case.
+ * FIXME (mm_view) this isn't very optimized
+ */
+static void mmview_wrprotect_siblings_huge(struct mm_struct *mm,
+					   unsigned long addr,
+					   struct hstate *h)
+{
+	struct mm_struct *mm_cursor;
+	list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+		pte_t *ptep, entry;
+		spinlock_t *ptl;
+
+		ptep = huge_pte_offset(mm_cursor, addr, huge_page_size(h));
+		if (!ptep)
+			continue;
+
+		ptl = huge_pte_lock(h, mm_cursor, ptep);
+		entry = huge_ptep_get(ptep);
+		if (!huge_pte_none(entry) && pte_present(entry))
+			huge_ptep_set_wrprotect(mm_cursor, addr, ptep);
+		spin_unlock(ptl);
+	}
+}
+
 int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
-			    struct vm_area_struct *vma)
+			    struct vm_area_struct *vma, bool is_mmview)
 {
 	pte_t *src_pte, *dst_pte, entry, dst_entry;
 	struct page *ptepage;
 	unsigned long addr;
-	bool cow = is_cow_mapping(vma->vm_flags);
+	bool cow = is_cow_mapping(vma->vm_flags) &&
+		!(is_mmview && vma->mm_view_shared);
 	struct hstate *h = hstate_vma(vma);
 	unsigned long sz = huge_page_size(h);
 	unsigned long npages = pages_per_huge_page(h);
@@ -4408,6 +4434,9 @@ again:
 				 */
 				huge_ptep_set_wrprotect(src, addr, src_pte);
 				entry = huge_pte_wrprotect(entry);
+
+				if (mm_has_views(src))
+					mmview_wrprotect_siblings_huge(src, addr, h);
 			}
 
 			page_dup_rmap(ptepage, true);
@@ -5056,6 +5085,64 @@ u32 hugetlb_fault_mutex_hash(struct address_space *mapping, pgoff_t idx)
 }
 #endif
 
+static vm_fault_t mmview_sync_hugetlb_page(struct vm_area_struct *vma,
+					   unsigned long address, pte_t *ptep)
+{
+	struct mm_struct *mm = vma->vm_mm, *base_mm = mm->common->base;
+	struct vm_area_struct *base_vma;
+	struct hstate *h = hstate_vma(vma);
+	pte_t *base_ptep, entry;
+	spinlock_t *base_ptl, *ptl;
+	struct page *page;
+	int ret = 0;
+
+	base_vma = find_vma(base_mm, address);
+	BUG_ON(!base_vma);
+
+	/* page_table_lock to protect against threads and __anon_vma_prepare */
+	spin_lock(&base_mm->page_table_lock);
+	if (base_vma->anon_vma && !vma->anon_vma) {
+		vma->anon_vma = base_vma->anon_vma;
+		spin_unlock(&base_mm->page_table_lock);
+		if (anon_vma_clone(vma, base_vma)) {
+			ret = VM_FAULT_OOM;
+			goto out;
+		}
+	} else
+		spin_unlock(&base_mm->page_table_lock);
+
+	base_ptep = huge_pte_offset(base_mm, address, huge_page_size(h));
+	base_ptl = huge_pte_lock(h, base_mm, base_ptep);
+
+	ptl = huge_pte_lock(h, mm, ptep);
+	/* Bail out if the PTE has been set by a concurrent fault */
+	if (!huge_pte_none(huge_ptep_get(ptep)))
+		goto out_unlock;
+
+	entry = huge_ptep_get(base_ptep);
+	if (huge_pte_none(entry) || !pte_present(entry)) {
+		/*
+		 * A fault in base mm will allocate the page or handle the
+		 * non-present migration/hwpoison case.
+		 */
+		ret = VM_FAULT_VIEW_RETRY;
+		goto out_unlock;
+	}
+
+	page = pte_page(entry);
+	get_page(page);
+	page_dup_rmap(page, true);
+
+	set_huge_pte_at(mm, address, ptep, entry);
+	hugetlb_count_add(pages_per_huge_page(h), mm);
+
+out_unlock:
+	spin_unlock(ptl);
+	spin_unlock(base_ptl);
+out:
+	return ret;
+}
+
 vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 			unsigned long address, unsigned int flags)
 {
@@ -5117,11 +5204,33 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	entry = huge_ptep_get(ptep);
 	if (huge_pte_none(entry)) {
+		if (vma->mm_view_shared && mm != mm->common->base) {
+			ret = mmview_sync_hugetlb_page(vma, haddr, ptep);
+			goto out_mutex;
+		}
+
 		ret = hugetlb_no_page(mm, vma, mapping, idx, address, ptep, flags);
 		goto out_mutex;
 	}
 
 	ret = 0;
+
+	if (vma->mm_view_shared) {
+		struct mm_struct *mm_cursor;
+		if (vma->vm_mm != vma->vm_mm->common->base)
+			return VM_FAULT_VIEW_RETRY;
+		if (!mutex_trylock(&vma->vm_mm->common->zapping_lock))
+			return 0;
+		list_for_each_entry(mm_cursor, &vma->vm_mm->siblings,
+				    siblings) {
+			struct vm_area_struct *other_vma =
+				find_vma(mm_cursor, haddr);
+			WARN_ON(other_vma == NULL);
+			unmap_hugepage_range(other_vma, haddr,
+					     haddr+huge_page_size(h), NULL);
+		}
+		mutex_unlock(&vma->vm_mm->common->zapping_lock);
+	}
 
 	/*
 	 * entry could be a migration/hwpoison entry at this point, so this
@@ -5698,6 +5807,7 @@ bool hugetlb_reserve_pages(struct inode *inode,
 	struct resv_map *resv_map;
 	struct hugetlb_cgroup *h_cg = NULL;
 	long gbl_reserve, regions_needed = 0;
+	struct mm_struct *mm = vma->vm_mm;
 
 	/* This should never happen */
 	if (from > to) {
@@ -5710,7 +5820,7 @@ bool hugetlb_reserve_pages(struct inode *inode,
 	 * attempt will be made for VM_NORESERVE to allocate a page
 	 * without using reserves
 	 */
-	if (vm_flags & VM_NORESERVE)
+	if (vm_flags & VM_NORESERVE || (mm != mm->common->base && vma->mm_view_shared))
 		return true;
 
 	/*

@@ -95,6 +95,7 @@ SYSCALL_DEFINE2(mmview_unshare, unsigned long, addr, unsigned long, len)
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma, *prev, *last, *tmp;
+	unsigned long page_size = PAGE_SIZE;
 	unsigned long end;
 	int ret = 0;
 
@@ -113,18 +114,23 @@ SYSCALL_DEFINE2(mmview_unshare, unsigned long, addr, unsigned long, len)
 		goto out;
 	}
 
-	len = PAGE_ALIGN(len);
-	if (len == 0) {
-		ret = -EINVAL;
-		goto out;
-	}
-
 	vma = find_vma(mm, addr);
 	if (!vma) {
 		ret = -EINVAL;
 		goto out;
 	}
 	prev = vma->vm_prev;
+
+	if (is_vm_hugetlb_page(vma)) {
+		struct hstate *h = hstate_vma(vma);
+		page_size = huge_page_size(h);
+	}
+	len = ALIGN(len, page_size);
+
+	if (len == 0) {
+		ret = -EINVAL;
+		goto out;
+	}
 
 	end = addr + len;
 	if (vma->vm_start >= end) {
@@ -157,8 +163,6 @@ SYSCALL_DEFINE2(mmview_unshare, unsigned long, addr, unsigned long, len)
 	/* Make some checks */
 	tmp = vma;
 	while (tmp && tmp->vm_start < end) {
-		if (is_vm_hugetlb_page(tmp))
-			BUG(); /* FIXME */
 		if ((tmp->vm_flags & VM_SHARED) && !tmp->mm_view_shared) {
 			ret = -EACCES;
 			goto out;
