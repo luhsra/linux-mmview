@@ -74,6 +74,7 @@
 #include <linux/perf_event.h>
 #include <linux/ptrace.h>
 #include <linux/vmalloc.h>
+#include <linux/pagewalk.h>
 
 #include <trace/events/kmem.h>
 
@@ -937,25 +938,6 @@ copy_present_page(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 }
 
 /*
- * This is used in copy_present_pte in the COW case.
- * FIXME (mm_view) this isn't very optimized
- */
-static void mm_view_wrprotect_siblings(struct mm_struct *mm,
-				       unsigned long address) {
-	struct mm_struct *mm_cursor;
-	list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
-		pte_t *ptep;
-		spinlock_t *ptl;
-		/* mmap_lock is already taken */
-		if (follow_pte(mm_cursor, address, &ptep, &ptl) == 0) {
-			ptep_set_wrprotect(mm_cursor, address, ptep);
-			pte_unmap_unlock(ptep, ptl);
-		}
-	}
-}
-
-
-/*
  * Copy one pte.  Returns 0 if succeeded, or -EAGAIN if one preallocated page
  * is required to copy this pte.
  */
@@ -992,12 +974,6 @@ copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	    !(is_mm_view && src_vma->mm_view_shared)) {
 		ptep_set_wrprotect(src_mm, addr, src_pte);
 		pte = pte_wrprotect(pte);
-
-		/*
-		 * If there are sibling mm views, we have to
-		 * wrprotect those pages too.
-		 */
-		mm_view_wrprotect_siblings(src_mm, addr);
 	}
 
 	/*
@@ -1291,9 +1267,70 @@ copy_p4d_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	return 0;
 }
 
+static int mmview_wrprotect_pte_range(pmd_t *pmd, unsigned long addr,
+				      unsigned long end, struct mm_walk *walk)
+{
+	spinlock_t *ptl;
+	pte_t *pte;
+
+	pte = pte_offset_map_lock(walk->mm, pmd, addr, &ptl);
+	for (; addr != end; pte++, addr += PAGE_SIZE) {
+		if (pte_none(*pte) || !pte_present(*pte))
+			continue;
+		ptep_set_wrprotect(walk->mm, addr, pte);
+	}
+	pte_unmap_unlock(pte - 1, ptl);
+
+	return 0;
+}
+
+static int mmview_wrprotect_hugetlb_entry(pte_t *ptep, unsigned long hmask,
+					  unsigned long addr, unsigned long next,
+					  struct mm_walk *walk)
+{
+	struct hstate *h = hstate_vma(walk->vma);
+	spinlock_t *ptl = huge_pte_lock(h, walk->mm, ptep);
+	pte_t entry = huge_ptep_get(ptep);
+
+	if (!huge_pte_none(entry) && pte_present(entry))
+		huge_ptep_set_wrprotect(walk->mm, addr & hmask, ptep);
+
+	spin_unlock(ptl);
+
+	return 0;
+}
+
+static void mmview_wrprotect_siblings(struct mm_struct *mm,
+				      struct vm_area_struct *vma)
+{
+	const struct mm_walk_ops walk_ops = {
+		.pmd_entry = mmview_wrprotect_pte_range,
+		.hugetlb_entry = mmview_wrprotect_hugetlb_entry,
+	};
+	struct mm_struct *mm_cursor;
+
+	list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+		struct mmu_notifier_range range;
+		mmu_notifier_range_init(&range, MMU_NOTIFY_PROTECTION_PAGE, 0, NULL,
+					mm_cursor, vma->vm_start, vma->vm_end);
+		mmu_notifier_invalidate_range_start(&range);
+
+		/* No need for vm_area_struct in case of regular pages. */
+		if (is_vm_hugetlb_page(vma)) {
+			struct vm_area_struct *vma_cursor =
+				find_vma(mm_cursor, vma->vm_start);
+			walk_page_vma(vma_cursor, &walk_ops, NULL);
+		} else
+			walk_page_range_novma(mm_cursor, vma->vm_start, vma->vm_end,
+					      &walk_ops, mm_cursor->pgd, NULL);
+
+		mmu_notifier_invalidate_range_end(&range);
+	}
+}
+
 int
 	copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
-			bool is_mm_view)
+			bool is_mmview)
 {
 	pgd_t *src_pgd, *dst_pgd;
 	unsigned long next;
@@ -1315,8 +1352,19 @@ int
 	    !src_vma->anon_vma)
 		return 0;
 
-	if (is_vm_hugetlb_page(src_vma))
-		return copy_hugetlb_page_range(dst_mm, src_mm, src_vma, is_mm_view);
+	/*
+	 * We need to invalidate the secondary MMU mappings only when
+	 * there could be a permission downgrade on the ptes of the
+	 * parent mm. And a permission downgrade will only happen if
+	 * is_cow_mapping() returns true.
+	 */
+	is_cow = is_cow_mapping(src_vma->vm_flags) &&
+		!(is_mmview && src_vma->mm_view_shared);
+
+	if (is_vm_hugetlb_page(src_vma)) {
+		ret = copy_hugetlb_page_range(dst_mm, src_mm, src_vma, is_mmview);
+		goto out_wrprotect_siblings;
+	}
 
 	if (unlikely(src_vma->vm_flags & VM_PFNMAP)) {
 		/*
@@ -1327,15 +1375,6 @@ int
 		if (ret)
 			return ret;
 	}
-
-	/*
-	 * We need to invalidate the secondary MMU mappings only when
-	 * there could be a permission downgrade on the ptes of the
-	 * parent mm. And a permission downgrade will only happen if
-	 * is_cow_mapping() returns true.
-	 */
-	is_cow = is_cow_mapping(src_vma->vm_flags) &&
-		!(is_mm_view && src_vma->mm_view_shared);
 
 	if (is_cow) {
 		mmu_notifier_range_init(&range, MMU_NOTIFY_PROTECTION_PAGE,
@@ -1360,9 +1399,9 @@ int
 		if (pgd_none_or_clear_bad(src_pgd))
 			continue;
 		if (unlikely(copy_p4d_range(dst_vma, src_vma, dst_pgd, src_pgd,
-					    addr, next, is_mm_view))) {
+					    addr, next, is_mmview))) {
 			ret = -ENOMEM;
-			break;
+			goto out;
 		}
 	} while (dst_pgd++, src_pgd++, addr = next, addr != end);
 
@@ -1370,6 +1409,12 @@ int
 		raw_write_seqcount_end(&src_mm->write_protect_seq);
 		mmu_notifier_invalidate_range_end(&range);
 	}
+
+out_wrprotect_siblings:
+	if (is_cow && mm_has_views(src_mm))
+		mmview_wrprotect_siblings(src_mm, src_vma);
+
+out:
 	return ret;
 }
 

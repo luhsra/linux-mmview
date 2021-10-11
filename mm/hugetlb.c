@@ -4267,31 +4267,6 @@ hugetlb_install_page(struct vm_area_struct *vma, pte_t *ptep, unsigned long addr
 	SetHPageMigratable(new_page);
 }
 
-/*
- * This is used in copy_hugetlb_page_range in the COW case.
- * FIXME (mm_view) this isn't very optimized
- */
-static void mmview_wrprotect_siblings_huge(struct mm_struct *mm,
-					   unsigned long addr,
-					   struct hstate *h)
-{
-	struct mm_struct *mm_cursor;
-	list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
-		pte_t *ptep, entry;
-		spinlock_t *ptl;
-
-		ptep = huge_pte_offset(mm_cursor, addr, huge_page_size(h));
-		if (!ptep)
-			continue;
-
-		ptl = huge_pte_lock(h, mm_cursor, ptep);
-		entry = huge_ptep_get(ptep);
-		if (!huge_pte_none(entry) && pte_present(entry))
-			huge_ptep_set_wrprotect(mm_cursor, addr, ptep);
-		spin_unlock(ptl);
-	}
-}
-
 int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
 			    struct vm_area_struct *vma, bool is_mmview)
 {
@@ -4434,9 +4409,6 @@ again:
 				 */
 				huge_ptep_set_wrprotect(src, addr, src_pte);
 				entry = huge_pte_wrprotect(entry);
-
-				if (mm_has_views(src))
-					mmview_wrprotect_siblings_huge(src, addr, h);
 			}
 
 			page_dup_rmap(ptepage, true);
