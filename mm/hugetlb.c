@@ -5217,10 +5217,13 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	if (vma->mm_view_shared) {
 		struct mm_struct *mm_cursor;
-		if (vma->vm_mm != vma->vm_mm->common->base)
-			return VM_FAULT_VIEW_RETRY;
+		if (vma->vm_mm != vma->vm_mm->common->base) {
+			ret = VM_FAULT_VIEW_RETRY;
+			goto out_mutex;
+		}
+
 		if (!mutex_trylock(&vma->vm_mm->common->zapping_lock))
-			return 0;
+			goto out_mutex;
 		list_for_each_entry(mm_cursor, &vma->vm_mm->siblings,
 				    siblings) {
 			struct vm_area_struct *other_vma =
