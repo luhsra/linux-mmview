@@ -237,7 +237,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	oldbrk = PAGE_ALIGN(mm->brk);
 	if (oldbrk == newbrk) {
 		mm->brk = brk;
-		/* Do the same for all as_generations */
+		/* Do the same for all mm views */
 		if (mm_has_views(mm)) {
 			struct mm_struct *mm_cursor;
 			list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
@@ -269,7 +269,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 			downgraded = true;
 		}
 
-		/* Do the same for all as_generations */
+		/* Do the same for all mm views */
 		if (mm_has_views(mm)) {
 			struct mm_struct *mm_cursor;
 			int other_ret;
@@ -294,7 +294,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 	if (ret < 0)
 		goto out;
 	mm->brk = brk;
-	/* Do the same for all as_generations */
+	/* Do the same for all mm views */
 	if (mm_has_views(mm)) {
 		struct mm_struct *mm_cursor;
 		int other_ret;
@@ -1063,7 +1063,7 @@ again:
 static inline int is_mergeable_vma(struct vm_area_struct *vma,
 				struct file *file, unsigned long vm_flags,
 				   struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
-				   bool mm_view_shared)
+				   bool mmview_shared)
 {
 	/*
 	 * VM_SOFTDIRTY should not prevent from VMA merging, if we
@@ -1075,7 +1075,7 @@ static inline int is_mergeable_vma(struct vm_area_struct *vma,
 	 */
 	if ((vma->vm_flags ^ vm_flags) & ~VM_SOFTDIRTY)
 		return 0;
-	if (!!vma->mm_view_shared != !!mm_view_shared)
+	if (!!vma->mmview_shared != !!mmview_shared)
 		return 0;
 	if (vma->vm_file != file)
 		return 0;
@@ -1116,10 +1116,10 @@ can_vma_merge_before(struct vm_area_struct *vma, unsigned long vm_flags,
 		     struct anon_vma *anon_vma, struct file *file,
 		     pgoff_t vm_pgoff,
 		     struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
-		     bool mm_view_shared)
+		     bool mmview_shared)
 {
 	if (is_mergeable_vma(vma, file, vm_flags, vm_userfaultfd_ctx,
-			     mm_view_shared) &&
+			     mmview_shared) &&
 	    is_mergeable_anon_vma(anon_vma, vma->anon_vma, vma)) {
 		if (vma->vm_pgoff == vm_pgoff)
 			return 1;
@@ -1139,10 +1139,10 @@ can_vma_merge_after(struct vm_area_struct *vma, unsigned long vm_flags,
 		    struct anon_vma *anon_vma, struct file *file,
 		    pgoff_t vm_pgoff,
 		    struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
-		    bool mm_view_shared)
+		    bool mmview_shared)
 {
 	if (is_mergeable_vma(vma, file, vm_flags, vm_userfaultfd_ctx,
-			     mm_view_shared) &&
+			     mmview_shared) &&
 	    is_mergeable_anon_vma(anon_vma, vma->anon_vma, vma)) {
 		pgoff_t vm_pglen;
 		vm_pglen = vma_pages(vma);
@@ -1201,7 +1201,7 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 			struct anon_vma *anon_vma, struct file *file,
 			pgoff_t pgoff, struct mempolicy *policy,
 			struct vm_userfaultfd_ctx vm_userfaultfd_ctx,
-			bool mm_view_shared)
+			bool mmview_shared)
 {
 	pgoff_t pglen = (end - addr) >> PAGE_SHIFT;
 	struct vm_area_struct *area, *next;
@@ -1232,7 +1232,7 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 			can_vma_merge_after(prev, vm_flags,
 					    anon_vma, file, pgoff,
 					    vm_userfaultfd_ctx,
-					    mm_view_shared)) {
+					    mmview_shared)) {
 		/*
 		 * OK, it can.  Can we now merge in the successor as well?
 		 */
@@ -1242,7 +1242,7 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 						     anon_vma, file,
 						     pgoff+pglen,
 						     vm_userfaultfd_ctx,
-						     mm_view_shared) &&
+						     mmview_shared) &&
 				is_mergeable_anon_vma(prev->anon_vma,
 						      next->anon_vma, NULL)) {
 							/* cases 1, 6 */
@@ -1266,7 +1266,7 @@ struct vm_area_struct *vma_merge(struct mm_struct *mm,
 			can_vma_merge_before(next, vm_flags,
 					     anon_vma, file, pgoff+pglen,
 					     vm_userfaultfd_ctx,
-					     mm_view_shared)) {
+					     mmview_shared)) {
 		if (prev && addr < prev->vm_end)	/* case 4 */
 			err = __vma_adjust(prev, prev->vm_start,
 					 addr, prev->vm_pgoff, NULL, next);
@@ -1623,7 +1623,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	     (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE))
 		*populate = len;
 
-	/* Do the same for all as_generations */
+	/* Do the same for all mm views */
 	if (mm_has_views(mm)) {
 		struct mm_struct *mm_cursor;
 		unsigned long other_addr;
@@ -1779,7 +1779,7 @@ unsigned long mmap_region(struct mm_struct *mm, struct file *file,
 	int error;
 	struct rb_node **rb_link, *rb_parent;
 	unsigned long charged = 0;
-	bool mm_view_shared = true; /* FIXME (mm_view) */
+	bool mmview_shared = true; /* FIXME (mmview) */
 
 	/* Check against address space limit. */
 	if (!may_expand_vm(mm, vm_flags, len >> PAGE_SHIFT)) {
@@ -1814,7 +1814,7 @@ unsigned long mmap_region(struct mm_struct *mm, struct file *file,
 	 */
 	vma = vma_merge(mm, prev, addr, addr + len, vm_flags,
 			NULL, file, pgoff, NULL, NULL_VM_UFFD_CTX,
-			mm_view_shared);
+			mmview_shared);
 	if (vma)
 		goto out;
 
@@ -1864,7 +1864,7 @@ unsigned long mmap_region(struct mm_struct *mm, struct file *file,
 		if (unlikely(vm_flags != vma->vm_flags && prev)) {
 			merge = vma_merge(mm, prev, vma->vm_start, vma->vm_end, vma->vm_flags,
 				NULL, vma->vm_file, vma->vm_pgoff, NULL, NULL_VM_UFFD_CTX,
-				mm_view_shared);
+				mmview_shared);
 			if (merge) {
 				/* ->mmap() can change vma->vm_file and fput the original file. So
 				 * fput the vma->vm_file here or we would add an extra fput for file
@@ -1904,7 +1904,7 @@ unmap_writable:
 		mapping_unmap_writable(file->f_mapping);
 	file = vma->vm_file;
 out:
-	vma->mm_view_shared = mm_view_shared;
+	vma->mmview_shared = mmview_shared;
 
 	perf_event_mmap(vma);
 
@@ -2957,7 +2957,7 @@ int do_munmap(struct mm_struct *mm, unsigned long start, size_t len,
 	int ret;
 	ret = __do_munmap(mm, start, len, uf, false);
 
-	/* Do the same for all as_generations */
+	/* Do the same for all mm views */
 	if (mm_has_views(mm)) {
 		struct mm_struct *mm_cursor;
 		int other_ret;
@@ -2980,7 +2980,7 @@ static int __vm_munmap(unsigned long start, size_t len, bool downgrade)
 		return -EINTR;
 
 	ret = __do_munmap(mm, start, len, &uf, downgrade);
-	/* Do the same for all as_generations */
+	/* Do the same for all mm views */
 	if (mm_has_views(mm)) {
 		struct mm_struct *mm_cursor;
 		int other_ret;
@@ -3161,7 +3161,7 @@ static int do_brk_flags(struct mm_struct *mm, unsigned long addr, unsigned long 
 	vma->vm_end = addr + len;
 	vma->vm_pgoff = pgoff;
 	vma->vm_flags = flags;
-	vma->mm_view_shared = true;
+	vma->mmview_shared = true;
 	vma->vm_page_prot = vm_get_page_prot(flags);
 	vma_link(mm, vma, prev, rb_link, rb_parent);
 out:
@@ -3192,7 +3192,7 @@ int vm_brk_flags(unsigned long addr, unsigned long request, unsigned long flags)
 		return -EINTR;
 
 	ret = do_brk_flags(mm, addr, len, flags, &uf);
-	/* FIXME (mm_view) This should not be called with mm views */
+	/* FIXME (mmview) This should not be called with mm views */
 	BUG_ON(mm_has_views(mm));
 	populate = ((mm->def_flags & VM_LOCKED) != 0);
 	mmap_write_unlock(mm);
@@ -3309,7 +3309,7 @@ int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
 
 	vma_link(mm, vma, prev, rb_link, rb_parent);
 
-	/* FIXME (mm_view) This should not be called with mm views */
+	/* FIXME (mmview) This should not be called with mm views */
 	BUG_ON(mm_has_views(mm));
 
 	return 0;
@@ -3343,7 +3343,7 @@ struct vm_area_struct *copy_vma(struct vm_area_struct **vmap,
 		return NULL;	/* should never get here */
 	new_vma = vma_merge(mm, prev, addr, addr + len, vma->vm_flags,
 			    vma->anon_vma, vma->vm_file, pgoff, vma_policy(vma),
-			    vma->vm_userfaultfd_ctx, vma->mm_view_shared);
+			    vma->vm_userfaultfd_ctx, vma->mmview_shared);
 	if (new_vma) {
 		/*
 		 * Source vma may have been merged into new_vma

@@ -341,7 +341,7 @@ struct vm_area_struct {
 	struct mm_struct *vm_mm;	/* The address space we belong to. */
 
 	/* Is this VMA shared between the mm views */
-	bool mm_view_shared;
+	bool mmview_shared;
 
 	/*
 	 * Access permissions of this VMA.
@@ -410,7 +410,7 @@ struct mm_common {
 
 	struct core_state *core_state; /* coredumping support */
 
-	/* FIXME (mm_view) there are still many occasions where
+	/* FIXME (mmview) there are still many occasions where
 	   mm->mm_users is queried, instead of mm->common->users */
 	atomic_t users;
 	atomic_t count;
@@ -738,6 +738,10 @@ typedef __bitwise unsigned int vm_fault_t;
  * @VM_FAULT_NEEDDSYNC:		->fault did not modify page tables and needs
  *				fsync() to complete (for synchronous page faults
  *				in DAX)
+ * @VM_FAULT_VIEW_RETRY:	Sibling page not found, retry after a fault in
+ *				base mm
+ * @VM_FAULT_DONE_SWAP:		->fault has loaded a page from swap (might need
+ *				to do the same for sibling mms)
  * @VM_FAULT_HINDEX_MASK:	mask HINDEX value
  *
  */

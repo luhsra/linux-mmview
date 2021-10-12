@@ -464,7 +464,7 @@ mprotect_fixup(struct vm_area_struct *vma, struct vm_area_struct **pprev,
 	pgoff = vma->vm_pgoff + ((start - vma->vm_start) >> PAGE_SHIFT);
 	*pprev = vma_merge(mm, *pprev, start, end, newflags,
 			   vma->anon_vma, vma->vm_file, pgoff, vma_policy(vma),
-			   vma->vm_userfaultfd_ctx, vma->mm_view_shared);
+			   vma->vm_userfaultfd_ctx, vma->mmview_shared);
 	if (*pprev) {
 		vma = *pprev;
 		VM_WARN_ON((vma->vm_flags ^ newflags) & ~VM_SOFTDIRTY);
@@ -566,18 +566,18 @@ static int do_mprotect_pkey(unsigned long start, size_t len,
 	if (!vma)
 		goto out;
 
-		/* Make sure that all those VMAs are either shared between as_generations or not */
+	/* Make sure that all those VMAs are either shared between mmviews or not */
 	tmpvma = vma;
 	while (tmpvma && tmpvma->vm_start < end) {
-		if (vma->mm_view_shared != tmpvma->mm_view_shared) {
-			/* FIXME (mm_view) */
-			printk(KERN_INFO "as_generation: mprotect: inconsistent sharing\n");
+		if (vma->mmview_shared != tmpvma->mmview_shared) {
+			/* FIXME (mmview) */
+			printk(KERN_INFO "mmview: mprotect: inconsistent sharing\n");
 			error = -EACCES;
 			goto out;
 		}
 		tmpvma = tmpvma->vm_next;
 	}
-	if (vma->mm_view_shared)
+	if (vma->mmview_shared)
 		sync_views = true;
 
 	org_start = start;

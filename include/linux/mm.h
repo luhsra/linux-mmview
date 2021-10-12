@@ -663,7 +663,7 @@ static inline void vma_init(struct vm_area_struct *vma, struct mm_struct *mm)
 	memset(vma, 0, sizeof(*vma));
 	vma->vm_mm = mm;
 	vma->vm_ops = &dummy_vm_ops;
-	vma->mm_view_shared = true;
+	vma->mmview_shared = true;
 	INIT_LIST_HEAD(&vma->anon_vma_chain);
 }
 
@@ -1746,7 +1746,7 @@ void free_pgd_range(struct mmu_gather *tlb, unsigned long addr,
 		unsigned long end, unsigned long floor, unsigned long ceiling);
 int
 copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
-		bool is_mm_view);
+		bool is_mmview);
 int follow_invalidate_pte(struct mm_struct *mm, unsigned long address,
 			  struct mmu_notifier_range *range, pte_t **ptepp,
 			  pmd_t **pmdpp, spinlock_t **ptlp);
@@ -2550,7 +2550,7 @@ static inline int vma_adjust(struct vm_area_struct *vma, unsigned long start,
 extern struct vm_area_struct *vma_merge(struct mm_struct *,
 	struct vm_area_struct *prev, unsigned long addr, unsigned long end,
 	unsigned long vm_flags, struct anon_vma *, struct file *, pgoff_t,
-	struct mempolicy *, struct vm_userfaultfd_ctx, bool mm_view_shared);
+	struct mempolicy *, struct vm_userfaultfd_ctx, bool mmview_shared);
 extern struct anon_vma *find_mergeable_anon_vma(struct vm_area_struct *);
 extern int __split_vma(struct mm_struct *, struct vm_area_struct *,
 	unsigned long addr, int new_below);

@@ -4274,7 +4274,7 @@ int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
 	struct page *ptepage;
 	unsigned long addr;
 	bool cow = is_cow_mapping(vma->vm_flags) &&
-		!(is_mmview && vma->mm_view_shared);
+		!(is_mmview && vma->mmview_shared);
 	struct hstate *h = hstate_vma(vma);
 	unsigned long sz = huge_page_size(h);
 	unsigned long npages = pages_per_huge_page(h);
@@ -5057,6 +5057,13 @@ u32 hugetlb_fault_mutex_hash(struct address_space *mapping, pgoff_t idx)
 }
 #endif
 
+/*
+ * Return values:
+ *
+ *  0			- Success, base mm page found -> finish page fault
+ *  VM_FAULT_VIEW_RETRY	- No page found -> force a fault in base mm and retry
+ *  VM_FAULT_*		- Another error occured according to vm_fault_reason
+ */
 static vm_fault_t mmview_sync_hugetlb_page(struct vm_area_struct *vma,
 					   unsigned long address, pte_t *ptep)
 {
@@ -5176,7 +5183,7 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	entry = huge_ptep_get(ptep);
 	if (huge_pte_none(entry)) {
-		if (vma->mm_view_shared && mm != mm->common->base) {
+		if (vma->mmview_shared && mm != mm->common->base) {
 			ret = mmview_sync_hugetlb_page(vma, haddr, ptep);
 			goto out_mutex;
 		}
@@ -5187,7 +5194,7 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	ret = 0;
 
-	if (vma->mm_view_shared) {
+	if (vma->mmview_shared) {
 		struct mm_struct *mm_cursor;
 		if (vma->vm_mm != vma->vm_mm->common->base) {
 			ret = VM_FAULT_VIEW_RETRY;
@@ -5795,7 +5802,7 @@ bool hugetlb_reserve_pages(struct inode *inode,
 	 * attempt will be made for VM_NORESERVE to allocate a page
 	 * without using reserves
 	 */
-	if (vm_flags & VM_NORESERVE || (mm != mm->common->base && vma->mm_view_shared))
+	if (vm_flags & VM_NORESERVE || (mm != mm->common->base && vma->mmview_shared))
 		return true;
 
 	/*

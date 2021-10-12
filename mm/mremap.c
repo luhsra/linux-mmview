@@ -1061,7 +1061,7 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 	ret = do_mremap(mm, &downgraded, &locked, &uf, &uf_unmap_early,
 			&uf_unmap, addr, old_len, new_len, flags, new_addr, 0);
 
-	/* Do the same for all as_generations */
+	/* Do the same for all mm views */
 	if (mm_has_views(mm)) {
 		struct mm_struct *mm_cursor;
 		unsigned long other_ret;

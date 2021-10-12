@@ -1,4 +1,3 @@
-#include <linux/printk.h>
 #include <linux/syscalls.h>
 #include <linux/atomic.h>
 #include <linux/mm.h>
@@ -19,13 +18,7 @@ SYSCALL_DEFINE0(mmview_create)
 	if (!new_mm)
 		goto fail_nomem;
 
-	/* FIXME mmview_dup_mm returns with mm_users == 1.
-		 mmview_delete decreases the mm_users */
-
-	printk(KERN_INFO "mm_view: created: %lld\n", new_mm->view_id);
-
-	printk(KERN_INFO "mm_view: mm_users: %d, mm_count: %d\n",
-	       atomic_read(&new_mm->mm_users), atomic_read(&new_mm->mm_count));
+	mmview_debug("created mm %lld\n", new_mm->view_id);
 
 	id = new_mm->view_id;
 	mmput(new_mm);
@@ -68,8 +61,6 @@ SYSCALL_DEFINE1(mmview_migrate, int, id)
 	vmacache_flush(current);
 	sync_mm_rss(old_mm);
 
-	printk(KERN_INFO "DEBUG: migrate %p -> %p\n", old_mm, new_mm);
-
 	/* Switch mm */
 	local_irq_save(flags);
 	lockdep_assert_irqs_disabled();
@@ -81,13 +72,10 @@ SYSCALL_DEFINE1(mmview_migrate, int, id)
 	old_id = old_mm->view_id;
 	task_unlock(current);
 
-	printk(KERN_INFO "DEBUG: old users: %d\n", atomic_read(&old_mm->mm_users));
-	printk(KERN_INFO "DEBUG: new users: %d\n", atomic_read(&new_mm->mm_users));
-	printk(KERN_INFO "DEBUG: common users: %d\n", atomic_read(&new_mm->common->users));
+	mmview_debug("migrated mm %lld -> %lld\n", old_id, id);
 
 	mmput(old_mm);
 
-	printk(KERN_INFO "old_id: %llu\n", old_id);
 	return old_id;
 }
 
@@ -98,8 +86,6 @@ SYSCALL_DEFINE2(mmview_unshare, unsigned long, addr, unsigned long, len)
 	unsigned long page_size = PAGE_SIZE;
 	unsigned long end;
 	int ret = 0;
-
-	printk(KERN_INFO "DEBUG: mmview_migrate\n");
 
 	mmap_write_lock(mm);
 
@@ -163,19 +149,21 @@ SYSCALL_DEFINE2(mmview_unshare, unsigned long, addr, unsigned long, len)
 	/* Make some checks */
 	tmp = vma;
 	while (tmp && tmp->vm_start < end) {
-		if ((tmp->vm_flags & VM_SHARED) && !tmp->mm_view_shared) {
+		if ((tmp->vm_flags & VM_SHARED) && !tmp->mmview_shared) {
 			ret = -EACCES;
 			goto out;
 		}
 		tmp = tmp->vm_next;
 	}
 
-	/* Finally set as_generation_shared flag */
+	/* Finally set mmview_shared flag */
 	tmp = vma;
 	while (tmp && tmp->vm_start < end) {
-		tmp->mm_view_shared = false;
+		tmp->mmview_shared = false;
 		tmp = tmp->vm_next;
 	}
+
+	mmview_debug("unshared [%p-%p]\n", addr, addr+len);
 out:
 	mmap_write_unlock(mm);
 	return ret;
@@ -185,8 +173,6 @@ SYSCALL_DEFINE1(mmview_delete, int, id)
 {
 	struct mm_struct *current_mm = current->mm;
 	struct mm_struct *requested_mm;
-
-	printk(KERN_INFO "DEBUG: mmview_delete\n");
 
 	if (id <= 0)
 		return -EINVAL;
@@ -211,18 +197,17 @@ SYSCALL_DEFINE1(mmview_delete, int, id)
 		/* The view will no longer be accessible from the system calls,
 		 * but it will be kept in the list, until the last task stops
 		 * using it and calls mmput */
-		printk(KERN_INFO "DEBUG: mm still has %d users\n",
-		       atomic_read(&requested_mm->mm_users));
+		mmview_debug("mm %lld still had %d users\n", id,
+			    atomic_read(&requested_mm->mm_users));
 	}
 
 	mmput(requested_mm);
 
-	printk(KERN_INFO "DEBUG: deleted mm %d\n", id);
+	mmview_debug("deleted mm %lld\n", id);
 
 	return 0;
 
 fail:
 	mmap_write_unlock(current_mm);
-	printk(KERN_INFO "DEBUG: unable to find the requested mm\n");
 	return -EINVAL;
 }
