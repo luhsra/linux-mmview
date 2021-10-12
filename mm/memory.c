@@ -3867,8 +3867,9 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 	if (follow_pte(base_mm, vmf->address, &ptep, &ptl))
 		return VM_FAULT_VIEW_RETRY;
 
-	vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
-				       vmf->address, &vmf->ptl);
+	vmf->pte = pte_offset_map_lock_nested(vma->vm_mm, vmf->pmd,
+					      vmf->address, &vmf->ptl,
+					      SINGLE_DEPTH_NESTING);
 	if (!pte_none(*vmf->pte)) {
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
 		pte_unmap_unlock(ptep, ptl);

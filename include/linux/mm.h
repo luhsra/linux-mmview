@@ -2272,6 +2272,15 @@ static inline void pgtable_pte_page_dtor(struct page *page)
 	__pte;						\
 })
 
+#define pte_offset_map_lock_nested(mm, pmd, address, ptlp, subclass)	\
+({							\
+	spinlock_t *__ptl = pte_lockptr(mm, pmd);	\
+	pte_t *__pte = pte_offset_map(pmd, address);	\
+	*(ptlp) = __ptl;				\
+	spin_lock_nested(__ptl, subclass);		\
+	__pte;						\
+})
+
 #define pte_unmap_unlock(pte, ptl)	do {		\
 	spin_unlock(ptl);				\
 	pte_unmap(pte);					\

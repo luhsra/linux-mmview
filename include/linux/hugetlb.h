@@ -1082,6 +1082,17 @@ static inline spinlock_t *huge_pte_lock(struct hstate *h,
 	return ptl;
 }
 
+static inline spinlock_t *huge_pte_lock_nested(struct hstate *h,
+					       struct mm_struct *mm, pte_t *pte,
+					       int subclass)
+{
+	spinlock_t *ptl;
+
+	ptl = huge_pte_lockptr(h, mm, pte);
+	spin_lock_nested(ptl, subclass);
+	return ptl;
+}
+
 #if defined(CONFIG_HUGETLB_PAGE) && defined(CONFIG_CMA)
 extern void __init hugetlb_cma_reserve(int order);
 extern void __init hugetlb_cma_check(void);

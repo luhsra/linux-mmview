@@ -5093,7 +5093,7 @@ static vm_fault_t mmview_sync_hugetlb_page(struct vm_area_struct *vma,
 	base_ptep = huge_pte_offset(base_mm, address, huge_page_size(h));
 	base_ptl = huge_pte_lock(h, base_mm, base_ptep);
 
-	ptl = huge_pte_lock(h, mm, ptep);
+	ptl = huge_pte_lock_nested(h, mm, ptep, SINGLE_DEPTH_NESTING);
 	/* Bail out if the PTE has been set by a concurrent fault */
 	if (!huge_pte_none(huge_ptep_get(ptep)))
 		goto out_unlock;
