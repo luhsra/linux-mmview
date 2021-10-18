@@ -4747,7 +4747,8 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 
 	if (!vmf->pte) {
-		if (vmf->vma->mmview_shared &&
+		if (!(vmf->vma->vm_flags & VM_SHARED) &&
+		    vmf->vma->mmview_shared &&
 		    vmf->vma->vm_mm != vmf->vma->vm_mm->common->base) {
 			/*
 			 * Oh, this vma is possibly shared in multiple views.
@@ -4770,7 +4771,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 		return ret;
 	}
 
-	if (vmf->vma->mmview_shared) {
+	if (vmf->vma->mmview_shared && !(vmf->vma->vm_flags & VM_SHARED)) {
 		struct mm_struct *mm_cursor;
 		if (vmf->vma->vm_mm != vmf->vma->vm_mm->common->base)
 			return VM_FAULT_VIEW_RETRY;

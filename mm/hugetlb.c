@@ -5183,7 +5183,8 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	entry = huge_ptep_get(ptep);
 	if (huge_pte_none(entry)) {
-		if (vma->mmview_shared && mm != mm->common->base) {
+		if (!(vma->vm_flags & VM_SHARED) && vma->mmview_shared &&
+		    mm != mm->common->base) {
 			ret = mmview_sync_hugetlb_page(vma, haddr, ptep);
 			goto out_mutex;
 		}
@@ -5194,7 +5195,7 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 
 	ret = 0;
 
-	if (vma->mmview_shared) {
+	if (vma->mmview_shared && !(vma->vm_flags & VM_SHARED)) {
 		struct mm_struct *mm_cursor;
 		if (vma->vm_mm != vma->vm_mm->common->base) {
 			ret = VM_FAULT_VIEW_RETRY;
@@ -6127,6 +6128,9 @@ int huge_pmd_unshare(struct mm_struct *mm, struct vm_area_struct *vma,
 	pgd_t *pgd = pgd_offset(mm, *addr);
 	p4d_t *p4d = p4d_offset(pgd, *addr);
 	pud_t *pud = pud_offset(p4d, *addr);
+
+	if (!(vma->vm_flags & VM_MAYSHARE))
+		return 0;
 
 	i_mmap_assert_write_locked(vma->vm_file->f_mapping);
 	BUG_ON(page_count(virt_to_page(ptep)) == 0);
