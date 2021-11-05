@@ -260,7 +260,8 @@ static inline struct page *follow_huge_addr(struct mm_struct *mm,
 }
 
 static inline int copy_hugetlb_page_range(struct mm_struct *dst,
-			struct mm_struct *src, struct vm_area_struct *vma)
+			struct mm_struct *src, struct vm_area_struct *vma,
+			bool is_mmview)
 {
 	BUG();
 	return 0;

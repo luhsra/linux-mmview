@@ -462,3 +462,8 @@
 446	common	landlock_restrict_self		sys_landlock_restrict_self
 # 447 reserved for memfd_secret
 448	common	process_mrelease		sys_process_mrelease
+
+1000	common	mmview_create			sys_mmview_create
+1001	common	mmview_migrate			sys_mmview_migrate
+1002	common	mmview_unshare			sys_mmview_unshare
+1003	common	mmview_delete			sys_mmview_delete

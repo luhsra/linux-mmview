@@ -4,7 +4,7 @@
 #include <linux/list.h>
 #include <linux/vmacache.h>
 #include <linux/hugetlb.h>
-#include <asm/mmu_context.h>
+#include <linux/mmu_context.h>
 #include <linux/mmview.h>
 
 SYSCALL_DEFINE0(mmview_create)
@@ -18,7 +18,7 @@ SYSCALL_DEFINE0(mmview_create)
 	if (!new_mm)
 		goto fail_nomem;
 
-	mmview_debug("created mm %lld\n", new_mm->view_id);
+	mmview_debug("created mm %lu\n", new_mm->view_id);
 
 	id = new_mm->view_id;
 	mmput(new_mm);
@@ -29,11 +29,11 @@ fail_nomem:
 	return -ENOMEM;
 }
 
-SYSCALL_DEFINE1(mmview_migrate, int, id)
+SYSCALL_DEFINE1(mmview_migrate, long, id)
 {
 	struct mm_struct *old_mm = current->mm;
 	struct mm_struct *new_mm;
-	u64 old_id;
+	unsigned long old_id;
 	unsigned long flags;
 
 	/* Passing an invalid id (< 0) returns the current view id */
@@ -72,7 +72,7 @@ SYSCALL_DEFINE1(mmview_migrate, int, id)
 	old_id = old_mm->view_id;
 	task_unlock(current);
 
-	mmview_debug("migrated mm %lld -> %lld\n", old_id, id);
+	mmview_debug("migrated mm %lu -> %lu\n", old_id, id);
 
 	mmput(old_mm);
 
@@ -163,13 +163,13 @@ SYSCALL_DEFINE2(mmview_unshare, unsigned long, addr, unsigned long, len)
 		tmp = tmp->vm_next;
 	}
 
-	mmview_debug("unshared [%p-%p]\n", addr, addr+len);
+	mmview_debug("unshared [%lx-%lx]\n", addr, addr+len);
 out:
 	mmap_write_unlock(mm);
 	return ret;
 }
 
-SYSCALL_DEFINE1(mmview_delete, int, id)
+SYSCALL_DEFINE1(mmview_delete, long, id)
 {
 	struct mm_struct *current_mm = current->mm;
 	struct mm_struct *requested_mm;
@@ -197,13 +197,13 @@ SYSCALL_DEFINE1(mmview_delete, int, id)
 		/* The view will no longer be accessible from the system calls,
 		 * but it will be kept in the list, until the last task stops
 		 * using it and calls mmput */
-		mmview_debug("mm %lld still had %d users\n", id,
-			    atomic_read(&requested_mm->mm_users));
+		mmview_debug("mm %lu still had %d users\n", id,
+			     atomic_read(&requested_mm->mm_users));
 	}
 
 	mmput(requested_mm);
 
-	mmview_debug("deleted mm %lld\n", id);
+	mmview_debug("deleted mm %lu\n", id);
 
 	return 0;
 

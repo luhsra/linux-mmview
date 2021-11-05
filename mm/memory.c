@@ -39,7 +39,6 @@
  * Aug/Sep 2004 Changed to four level page tables (Andi Kleen)
  */
 
-#include "linux/mmdebug.h"
 #include <linux/kernel_stat.h>
 #include <linux/mm.h>
 #include <linux/sched/mm.h>
@@ -1288,6 +1287,7 @@ static int mmview_wrprotect_hugetlb_entry(pte_t *ptep, unsigned long hmask,
 					  unsigned long addr, unsigned long next,
 					  struct mm_walk *walk)
 {
+#ifdef CONFIG_HUGETLB_PAGE
 	struct hstate *h = hstate_vma(walk->vma);
 	spinlock_t *ptl = huge_pte_lock(h, walk->mm, ptep);
 	pte_t entry = huge_ptep_get(ptep);
@@ -1296,6 +1296,9 @@ static int mmview_wrprotect_hugetlb_entry(pte_t *ptep, unsigned long hmask,
 		huge_ptep_set_wrprotect(walk->mm, addr & hmask, ptep);
 
 	spin_unlock(ptl);
+#else
+	BUG();
+#endif
 
 	return 0;
 }
