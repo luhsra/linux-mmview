@@ -992,39 +992,6 @@ copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	return 0;
 }
 
-/*
- * Copy a present pte from the base mm to the sibling mm
- * This is similar to copy_present_pte
- */
-static void
-mmview_sync_present_pte(struct vm_area_struct *dst_vma,
-			struct vm_area_struct *src_vma,
-			pte_t *dst_pte, pte_t *src_pte, unsigned long addr,
-			int *rss)
-{
-	unsigned long vm_flags = src_vma->vm_flags;
-	pte_t pte = *src_pte;
-	struct page *page;
-
-	page = vm_normal_page(src_vma, addr, pte);
-	if (page) {
-		get_page(page);
-		page_dup_rmap(page, false);
-		rss[mm_counter(page)]++;
-	}
-
-	/*
-	 * If it's a shared mapping, mark it clean in
-	 * the child
-	 */
-	/* FIXME (mmview) see copy_present_pte */
-	if (vm_flags & VM_SHARED)
-		pte = pte_mkclean(pte);
-	pte = pte_mkold(pte);
-
-	set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
-}
-
 static inline struct page *
 page_copy_prealloc(struct mm_struct *src_mm, struct vm_area_struct *vma,
 		   unsigned long addr)
@@ -3840,6 +3807,7 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 	struct vm_area_struct *vma = vmf->vma;
 	struct mm_struct *base_mm = vmf->vma->vm_mm->common->base;
 	struct vm_area_struct *base_vma;
+	struct page *page;
 	int rss[NR_MM_COUNTERS];
 	pte_t *ptep;
 	spinlock_t *ptl;
@@ -3866,27 +3834,32 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 	} else
 		spin_unlock(&base_mm->page_table_lock);
 
-	BUG_ON(base_mm == vmf->vma->vm_mm);
 	if (follow_pte(base_mm, vmf->address, &ptep, &ptl))
 		return VM_FAULT_VIEW_RETRY;
+
+	if (pte_none(*ptep)) {
+		pte_unmap_unlock(ptep, ptl);
+		return VM_FAULT_VIEW_RETRY;
+	}
 
 	vmf->pte = pte_offset_map_lock_nested(vma->vm_mm, vmf->pmd,
 					      vmf->address, &vmf->ptl,
 					      SINGLE_DEPTH_NESTING);
+
 	if (!pte_none(*vmf->pte)) {
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
 		pte_unmap_unlock(ptep, ptl);
 		return 0; /* pte has been set by a concurrent fault */
 	}
 
-	if (pte_none(*ptep)) {
-		pte_unmap_unlock(vmf->pte, vmf->ptl);
-		pte_unmap_unlock(ptep, ptl);
-		return VM_FAULT_VIEW_RETRY;
+	page = vm_normal_page(base_vma, vmf->address, *ptep);
+	if (page) {
+		get_page(page);
+		page_dup_rmap(page, false);
+		rss[mm_counter(page)]++;
 	}
 
-	mmview_sync_present_pte(vma, base_vma, vmf->pte, ptep,
-				vmf->address, rss);
+	set_pte_at(vmf->vma->vm_mm, vmf->address, vmf->pte, *ptep);
 
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
 	pte_unmap_unlock(ptep, ptl);
