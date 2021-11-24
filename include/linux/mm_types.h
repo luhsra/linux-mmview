@@ -406,8 +406,6 @@ struct mm_common {
 	u64 next_view_id;
 	struct rw_semaphore mmap_lock;
 
-	struct mutex zapping_lock;
-
 	struct core_state *core_state; /* coredumping support */
 
 	/* FIXME (mmview) there are still many occasions where

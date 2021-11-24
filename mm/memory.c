@@ -3112,6 +3112,22 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 
 	__SetPageUptodate(new_page);
 
+	/*
+	 * If this page is shared among mmviews, zap their page table entries
+	 * to make sure subsequent reads get the new page.  Serialize this with
+	 * mmview_sync_page using mmap write lock.
+	 */
+	if (mm_has_views(mm) && vma->mmview_shared) {
+		struct mm_struct *mm_cursor;
+		struct vm_area_struct *vma_cursor;
+		mmap_read_unlock(mm);
+		mmap_write_lock(mm);
+		list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+			vma_cursor = find_vma(mm_cursor, vmf->address);
+			zap_page_range_single(vma_cursor, vmf->address, PAGE_SIZE, NULL);
+		}
+	}
+
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
 				vmf->address & PAGE_MASK,
 				(vmf->address & PAGE_MASK) + PAGE_SIZE);
@@ -3195,6 +3211,8 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	 * the above ptep_clear_flush_notify() did already call it.
 	 */
 	mmu_notifier_invalidate_range_only_end(&range);
+	if (mm_has_views(mm) && vma->mmview_shared)
+		mmap_write_downgrade(mm);
 	if (old_page) {
 		/*
 		 * Don't let another task, with possibly unlocked vma,
@@ -3391,6 +3409,11 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 		return wp_page_shared(vmf);
 	}
 copy:
+	if (vma->mmview_shared && vma->vm_mm != vma->vm_mm->common->base) {
+		pte_unmap_unlock(vmf->pte, vmf->ptl);
+		return VM_FAULT_VIEW_RETRY;
+	}
+
 	/*
 	 * Ok, we need to copy. Oh, well..
 	 */
@@ -3804,25 +3827,18 @@ out_release:
  */
 static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 {
-	struct vm_area_struct *vma = vmf->vma;
-	struct mm_struct *base_mm = vmf->vma->vm_mm->common->base;
-	struct vm_area_struct *base_vma;
+	struct vm_area_struct *base_vma, *vma = vmf->vma;
+	struct mm_struct *base_mm = vma->vm_mm->common->base;
 	struct page *page;
-	int rss[NR_MM_COUNTERS];
 	pte_t *ptep;
 	spinlock_t *ptl;
-	init_rss_vec(rss);
+	vm_fault_t ret;
 
 	if (pte_alloc(vma->vm_mm, vmf->pmd))
 		return VM_FAULT_OOM;
 
-	/* See comment in handle_pte_fault() */
-	if (unlikely(pmd_trans_unstable(vmf->pmd)))
-		return 0;
-
 	base_vma = find_vma(base_mm, vmf->address);
-	if (!base_vma)
-		return VM_FAULT_VIEW_RETRY;
+	BUG_ON(!base_vma);
 
 	/* page_table_lock to protect against threads and __anon_vma_prepare */
 	spin_lock(&base_mm->page_table_lock);
@@ -3834,38 +3850,34 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 	} else
 		spin_unlock(&base_mm->page_table_lock);
 
+	ret = VM_FAULT_VIEW_RETRY;
 	if (follow_pte(base_mm, vmf->address, &ptep, &ptl))
-		return VM_FAULT_VIEW_RETRY;
+		return ret;
 
-	if (pte_none(*ptep)) {
-		pte_unmap_unlock(ptep, ptl);
-		return VM_FAULT_VIEW_RETRY;
-	}
+	if (pte_none(*ptep))
+		goto out_unlock_ptl;
 
 	vmf->pte = pte_offset_map_lock_nested(vma->vm_mm, vmf->pmd,
 					      vmf->address, &vmf->ptl,
 					      SINGLE_DEPTH_NESTING);
-
-	if (!pte_none(*vmf->pte)) {
-		pte_unmap_unlock(vmf->pte, vmf->ptl);
-		pte_unmap_unlock(ptep, ptl);
-		return 0; /* pte has been set by a concurrent fault */
-	}
+	ret = 0;
+	if (!pte_none(*vmf->pte))
+		goto out_unlock; /* pte has been set by a concurrent fault */
 
 	page = vm_normal_page(base_vma, vmf->address, *ptep);
 	if (page) {
 		get_page(page);
 		page_dup_rmap(page, false);
-		rss[mm_counter(page)]++;
+		inc_mm_counter_fast(vma->vm_mm, mm_counter(page));
 	}
 
 	set_pte_at(vmf->vma->vm_mm, vmf->address, vmf->pte, *ptep);
 
+out_unlock:
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
+out_unlock_ptl:
 	pte_unmap_unlock(ptep, ptl);
-
-	add_mm_rss_vec(vma->vm_mm, rss);
-	return 0;
+	return ret;
 }
 
 /*
@@ -4745,26 +4757,6 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 		if (!(ret & VM_FAULT_ERROR))
 			ret |= VM_FAULT_DONE_SWAP;
 		return ret;
-	}
-
-	if (vmf->vma->mmview_shared && !(vmf->vma->vm_flags & VM_SHARED)) {
-		struct mm_struct *mm_cursor;
-		if (vmf->vma->vm_mm != vmf->vma->vm_mm->common->base) {
-			pte_unmap(vmf->pte);
-			return VM_FAULT_VIEW_RETRY;
-		}
-		if (!mutex_trylock(&vmf->vma->vm_mm->common->zapping_lock)) {
-			pte_unmap(vmf->pte);
-			return 0;
-		}
-		list_for_each_entry(mm_cursor, &vmf->vma->vm_mm->siblings,
-				    siblings) {
-			struct vm_area_struct *other_vma =
-				find_vma(mm_cursor, vmf->address);
-			WARN_ON(other_vma == NULL);
-			zap_page_range(other_vma, vmf->address, PAGE_SIZE);
-		}
-		mutex_unlock(&vmf->vma->vm_mm->common->zapping_lock);
 	}
 
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) {

@@ -55,7 +55,6 @@ static unsigned long __initdata rt_prop = EFI_INVALID_TABLE_ADDR;
 
 struct mm_common efi_mm_common = {
 	MMAP_LOCK_INITIALIZER(efi_mm_common)
-	.zapping_lock = __MUTEX_INITIALIZER(efi_mm_common.zapping_lock),
 	.base = &efi_mm,
 	.next_view_id = 1,
 	.users = ATOMIC_INIT(1),

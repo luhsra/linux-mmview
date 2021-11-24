@@ -4645,6 +4645,9 @@ retry_avoidcopy:
 		return 0;
 	}
 
+	if (vma->mmview_shared && mm != mm->common->base)
+		return VM_FAULT_VIEW_RETRY;
+
 	/*
 	 * If the process that created a MAP_PRIVATE mapping is about to
 	 * perform a COW due to a shared page count, attempt to satisfy
@@ -4728,6 +4731,20 @@ retry_avoidcopy:
 	copy_user_huge_page(new_page, old_page, address, vma,
 			    pages_per_huge_page(h));
 	__SetPageUptodate(new_page);
+
+	if (mm_has_views(mm) && vma->mmview_shared) {
+		struct mm_struct *mm_cursor;
+		struct vm_area_struct *vma_cursor;
+		/*
+		 * hugetlb_fault_mutex_table protects here against concurrent
+		 * mmview_sync_hugetlb_page reinstating the old page.
+		 */
+		list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+			vma_cursor = find_vma(mm_cursor, address);
+			unmap_hugepage_range(vma_cursor, haddr,
+					     haddr + huge_page_size(h), NULL);
+		}
+	}
 
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm, haddr,
 				haddr + huge_page_size(h));
@@ -5194,26 +5211,6 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	}
 
 	ret = 0;
-
-	if (vma->mmview_shared && !(vma->vm_flags & VM_SHARED)) {
-		struct mm_struct *mm_cursor;
-		if (vma->vm_mm != vma->vm_mm->common->base) {
-			ret = VM_FAULT_VIEW_RETRY;
-			goto out_mutex;
-		}
-
-		if (!mutex_trylock(&vma->vm_mm->common->zapping_lock))
-			goto out_mutex;
-		list_for_each_entry(mm_cursor, &vma->vm_mm->siblings,
-				    siblings) {
-			struct vm_area_struct *other_vma =
-				find_vma(mm_cursor, haddr);
-			WARN_ON(other_vma == NULL);
-			unmap_hugepage_range(other_vma, haddr,
-					     haddr+huge_page_size(h), NULL);
-		}
-		mutex_unlock(&vma->vm_mm->common->zapping_lock);
-	}
 
 	/*
 	 * entry could be a migration/hwpoison entry at this point, so this
