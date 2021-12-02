@@ -839,6 +839,11 @@ static inline int head_compound_mapcount(struct page *head)
 	return atomic_read(compound_mapcount_ptr(head)) + 1;
 }
 
+static inline int head_compound_viewcount(struct page *head)
+{
+	return atomic_read(compound_viewcount_ptr(head));
+}
+
 /*
  * Mapcount of compound page as a whole, does not include mapped sub-pages.
  *
@@ -859,6 +864,7 @@ static inline int compound_mapcount(struct page *page)
 static inline void page_mapcount_reset(struct page *page)
 {
 	atomic_set(&(page)->_mapcount, -1);
+	atomic_set(&(page)->_viewcount, 0);
 }
 
 int __page_mapcount(struct page *page);
@@ -876,6 +882,16 @@ static inline int page_mapcount(struct page *page)
 	if (unlikely(PageCompound(page)))
 		return __page_mapcount(page);
 	return atomic_read(&page->_mapcount) + 1;
+}
+
+static inline int page_viewcount(struct page *page)
+{
+	BUG_ON(!PageAnon(page));
+	if (unlikely(PageCompound(page))) {
+		page = compound_head(page);
+		return atomic_read(compound_viewcount_ptr(page));
+	}
+	return atomic_read(&page->_viewcount);
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE

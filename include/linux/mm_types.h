@@ -151,6 +151,7 @@ struct page {
 			unsigned char compound_dtor;
 			unsigned char compound_order;
 			atomic_t compound_mapcount;
+			atomic_t compound_viewcount;
 			unsigned int compound_nr; /* 1 << compound_order */
 		};
 		struct {	/* Second tail page of compound page */
@@ -197,8 +198,14 @@ struct page {
 		/*
 		 * If the page can be mapped to userspace, encodes the number
 		 * of times this page is referenced by a page table.
+		 *
+		 * Keep track of the PTEs referencing this page in non-base
+		 * mmviews in _viewcount.
 		 */
-		atomic_t _mapcount;
+		struct {
+			atomic_t _mapcount;
+			atomic_t _viewcount;
+		};
 
 		/*
 		 * If the page is neither PageSlab nor mappable to userspace,
@@ -242,6 +249,11 @@ struct page {
 static inline atomic_t *compound_mapcount_ptr(struct page *page)
 {
 	return &page[1].compound_mapcount;
+}
+
+static inline atomic_t *compound_viewcount_ptr(struct page *page)
+{
+	return &page[1].compound_viewcount;
 }
 
 static inline atomic_t *compound_pincount_ptr(struct page *page)

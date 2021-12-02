@@ -56,7 +56,7 @@ static void __dump_page(struct page *page)
 	 * inaccuracy here due to racing.
 	 */
 	bool page_cma = is_migrate_cma_page(page);
-	int mapcount;
+	int mapcount, viewcount;
 	char *type = "";
 
 	if (page < head || (page >= head + MAX_ORDER_NR_PAGES)) {
@@ -85,20 +85,23 @@ static void __dump_page(struct page *page)
 	 * encode own info.
 	 */
 	mapcount = PageSlab(head) ? 0 : page_mapcount(page);
+	viewcount = !PageAnon(page) ? 0 : page_viewcount(page);
 
-	pr_warn("page:%p refcount:%d mapcount:%d mapping:%p index:%#lx pfn:%#lx\n",
-			page, page_ref_count(head), mapcount, mapping,
+	pr_warn("page:%p refcount:%d mapcount:%d viewcount:%d mapping:%p index:%#lx pfn:%#lx\n",
+			page, page_ref_count(head), mapcount, viewcount, mapping,
 			page_to_pgoff(page), page_to_pfn(page));
 	if (compound) {
 		if (hpage_pincount_available(page)) {
-			pr_warn("head:%p order:%u compound_mapcount:%d compound_pincount:%d\n",
+			pr_warn("head:%p order:%u compound_mapcount:%d compound_viewcount: %d compound_pincount:%d\n",
 					head, compound_order(head),
 					head_compound_mapcount(head),
+					head_compound_viewcount(head),
 					head_compound_pincount(head));
 		} else {
-			pr_warn("head:%p order:%u compound_mapcount:%d\n",
+			pr_warn("head:%p order:%u compound_mapcount:%d compound_viewcount: %d\n",
 					head, compound_order(head),
-					head_compound_mapcount(head));
+					head_compound_mapcount(head),
+					head_compound_viewcount(head));
 		}
 	}
 

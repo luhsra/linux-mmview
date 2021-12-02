@@ -827,7 +827,7 @@ copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 		 */
 		get_page(page);
 		rss[mm_counter(page)]++;
-		page_dup_rmap(page, false);
+		page_dup_rmap(page, false, is_mmview);
 
 		/*
 		 * We do not preserve soft-dirty information, because so
@@ -961,7 +961,7 @@ copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 			return retval;
 
 		get_page(page);
-		page_dup_rmap(page, false);
+		page_dup_rmap(page, false, is_mmview);
 		rss[mm_counter(page)]++;
 	}
 
@@ -1400,6 +1400,8 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 	pte_t *start_pte;
 	pte_t *pte;
 	swp_entry_t entry;
+	/* mm->common can be NULL when called from mmview_dup_mm */
+	bool is_mmview = !mm->common || mm != mm->common->base;
 
 	tlb_change_page_size(tlb, PAGE_SIZE);
 again:
@@ -1446,7 +1448,7 @@ again:
 					mark_page_accessed(page);
 			}
 			rss[mm_counter(page)]--;
-			page_remove_rmap(page, false);
+			page_remove_rmap(page, false, is_mmview);
 			if (unlikely(page_mapcount(page) < 0))
 				print_bad_pte(vma, addr, ptent, page);
 			if (unlikely(__tlb_remove_page(tlb, page))) {
@@ -1477,7 +1479,7 @@ again:
 			rss[mm_counter(page)]--;
 
 			if (is_device_private_entry(entry))
-				page_remove_rmap(page, false);
+				page_remove_rmap(page, false, is_mmview);
 
 			put_page(page);
 			continue;
@@ -3192,7 +3194,7 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 			 * mapcount is visible. So transitively, TLBs to
 			 * old page will be flushed before it can be reused.
 			 */
-			page_remove_rmap(old_page, false);
+			page_remove_rmap(old_page, false, mm != mm->common->base);
 		}
 
 		/* Free the old page.. */
@@ -3387,14 +3389,33 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 	if (PageAnon(vmf->page)) {
 		struct page *page = vmf->page;
 
-		/* PageKsm() doesn't necessarily raise the page refcount */
-		if (PageKsm(page) || page_count(page) != 1)
-			goto copy;
-		if (!trylock_page(page))
-			goto copy;
-		if (PageKsm(page) || page_mapcount(page) != 1 || page_count(page) != 1) {
-			unlock_page(page);
-			goto copy;
+		/*
+		 * In case of shared mmview VMA, don't copy the page if used
+		 * only by this process.
+		 */
+		if (mm_has_views(vma->vm_mm) && vma->mmview_shared) {
+			/* PageKsm() doesn't necessarily raise the page refcount */
+			if (PageKsm(page) ||
+			    page_count(page) - page_viewcount(page) != 1)
+				goto copy;
+			if (!trylock_page(page))
+				goto copy;
+			if (PageKsm(page) ||
+			    page_mapcount(page) - page_viewcount(page) != 1 ||
+			    page_count(page) - page_viewcount(page) != 1) {
+				unlock_page(page);
+				goto copy;
+			}
+		} else {
+			if (PageKsm(page) || page_count(page) != 1)
+				goto copy;
+			if (!trylock_page(page))
+				goto copy;
+			if (PageKsm(page) || page_mapcount(page) != 1 ||
+			    			page_count(page) != 1) {
+				unlock_page(page);
+				goto copy;
+			}
 		}
 		/*
 		 * Ok, we've got the only map reference, and the only
@@ -3867,7 +3888,7 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 	page = vm_normal_page(base_vma, vmf->address, *ptep);
 	if (page) {
 		get_page(page);
-		page_dup_rmap(page, false);
+		page_dup_rmap(page, false, true);
 		inc_mm_counter_fast(vma->vm_mm, mm_counter(page));
 	}
 
