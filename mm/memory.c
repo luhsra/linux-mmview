@@ -3858,7 +3858,7 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 	if (pte_alloc(vma->vm_mm, vmf->pmd))
 		return VM_FAULT_OOM;
 
-	base_vma = find_vma(base_mm, vmf->address);
+	base_vma = find_extend_vma(base_mm, vmf->address);
 	BUG_ON(!base_vma);
 
 	/* page_table_lock to protect against threads and __anon_vma_prepare */
@@ -4981,8 +4981,8 @@ static inline void mm_account_fault(struct pt_regs *regs,
  * The mmap_lock may have been released depending on flags and our
  * return value.  See filemap_fault() and __lock_page_or_retry().
  */
-vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
-			   unsigned int flags, struct pt_regs *regs)
+vm_fault_t do_handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
+			      unsigned int flags, struct pt_regs *regs)
 {
 	vm_fault_t ret;
 
@@ -5006,32 +5006,10 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 	if (flags & FAULT_FLAG_USER)
 		mem_cgroup_enter_user_fault();
 
-	if (unlikely(is_vm_hugetlb_page(vma))) {
+	if (unlikely(is_vm_hugetlb_page(vma)))
 		ret = hugetlb_fault(vma->vm_mm, vma, address, flags);
-		if (ret == VM_FAULT_VIEW_RETRY) {
-			struct vm_area_struct *base_vma =
-				find_vma(vma->vm_mm->common->base, address);
-			ret = hugetlb_fault(base_vma->vm_mm, base_vma, address, flags);
-			hugetlb_fault(vma->vm_mm, vma, address, flags);
-		}
-	} else {
+	else
 		ret = __handle_mm_fault(vma, address, flags);
-		if (ret == VM_FAULT_VIEW_RETRY) {
-			struct vm_area_struct *base_vma =
-				find_vma(vma->vm_mm->common->base, address);
-			ret = __handle_mm_fault(base_vma, address, flags);
-			__handle_mm_fault(vma, address, flags);
-		} else if (ret & VM_FAULT_DONE_SWAP &&
-			   mm_has_views(vma->vm_mm) && vma->mmview_shared) {
-			struct mm_struct *mm_cursor;
-			list_for_each_entry(mm_cursor, &vma->vm_mm->siblings, siblings) {
-				struct vm_area_struct *vma_cursor =
-					find_vma(mm_cursor, address);
-				WARN_ON(vma_cursor == NULL);
-				__handle_mm_fault(vma_cursor, address, flags);
-			}
-		}
-	}
 
 	if (flags & FAULT_FLAG_USER) {
 		mem_cgroup_exit_user_fault();
@@ -5046,6 +5024,33 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 	}
 
 	mm_account_fault(regs, address, flags, ret);
+
+	return ret;
+}
+
+vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
+			   unsigned int flags, struct pt_regs *regs)
+{
+	struct vm_area_struct *base_vma;
+	unsigned int base_flags = flags | FAULT_FLAG_REMOTE;
+	vm_fault_t ret;
+
+	ret = do_handle_mm_fault(vma, address, flags, regs);
+	if (!unlikely(ret & VM_FAULT_VIEW_RETRY)) /* fast path */
+		return ret;
+
+	base_vma = find_extend_vma(vma->vm_mm->common->base, address);
+	BUG_ON(!base_vma);
+
+	/* VM_FAULT_RETRY means the mmap_lock has been dropped. */
+	while ((ret = do_handle_mm_fault(base_vma, address, base_flags, NULL)) &
+	       VM_FAULT_RETRY) {
+		mmap_read_lock(vma->vm_mm);
+		base_flags |= FAULT_FLAG_TRIED;
+	}
+
+	if (!unlikely(ret & VM_FAULT_ERROR))
+		do_handle_mm_fault(vma, address, flags, regs);
 
 	return ret;
 }
