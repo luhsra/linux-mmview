@@ -6,6 +6,7 @@
 #include <linux/hugetlb.h>
 #include <linux/mmu_context.h>
 #include <linux/mmview.h>
+#include <linux/sched/task.h>
 
 SYSCALL_DEFINE0(mmview_create)
 {
@@ -14,7 +15,7 @@ SYSCALL_DEFINE0(mmview_create)
 
 	vmacache_flush(current);
 
-	new_mm = mmview_dup_mm(current->group_leader, current->mm);
+	new_mm = dup_mm(current->group_leader, current->mm, true);
 	if (!new_mm)
 		goto fail_nomem;
 
@@ -48,7 +49,7 @@ SYSCALL_DEFINE1(mmview_migrate, long, id)
 			break;
 	}
 	if (!new_mm || new_mm->view_id != id ||
-	    test_bit(MMVIEW_REMOVED, &new_mm->view_flags)) {
+	    !test_bit(MMVIEW_AVAILABLE, &new_mm->view_flags)) {
 		mmap_read_unlock(old_mm);
 		return -EINVAL;
 	}
@@ -186,11 +187,11 @@ SYSCALL_DEFINE1(mmview_delete, long, id)
 	}
 
 	if (!requested_mm || requested_mm->view_id != id ||
-	    test_bit(MMVIEW_REMOVED, &requested_mm->view_flags))
+	    !test_bit(MMVIEW_AVAILABLE, &requested_mm->view_flags))
 		goto fail;
 
 	mmget(requested_mm);
-	set_bit(MMVIEW_REMOVED, &requested_mm->view_flags);
+	clear_bit(MMVIEW_AVAILABLE, &requested_mm->view_flags);
 	mmap_write_unlock(current_mm);
 
 	if (atomic_read(&requested_mm->mm_users) > 0) {

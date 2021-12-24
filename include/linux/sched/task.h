@@ -90,6 +90,9 @@ extern pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 extern long kernel_wait4(pid_t, int __user *, int, struct rusage *);
 int kernel_wait(pid_t pid, int *stat);
 
+struct mm_struct *dup_mm(struct task_struct *tsk, struct mm_struct *oldmm,
+			 bool mmview);
+
 extern void free_task(struct task_struct *tsk);
 
 /* sched_exec is called by processes performing an exec */

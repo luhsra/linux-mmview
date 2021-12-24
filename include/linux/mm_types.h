@@ -415,15 +415,15 @@ struct core_state {
 
 struct mm_common {
 	struct mm_struct *base;
-	u64 next_view_id;
+	unsigned long next_view_id;
 	struct rw_semaphore mmap_lock;
 
 	struct core_state *core_state; /* coredumping support */
 
 	/* FIXME (mmview) there are still many occasions where
 	   mm->mm_users is queried, instead of mm->common->users */
-	atomic_t users;
-	atomic_t count;
+	atomic_t users;		/* total mm_users across all mms */
+	atomic_t count;		/* alive mms using this mm_common */
 };
 
 struct kioctx_table;

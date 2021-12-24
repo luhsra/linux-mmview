@@ -490,12 +490,14 @@ static void dup_mm_exe_file(struct mm_struct *mm, struct mm_struct *oldmm)
 
 #ifdef CONFIG_MMU
 static __latent_entropy int dup_mmap(struct mm_struct *mm,
-					struct mm_struct *oldmm)
+				     struct mm_struct *oldmm,
+				     struct mm_common *common)
 {
 	struct vm_area_struct *mpnt, *tmp, *prev, **pprev;
 	struct rb_node **rb_link, *rb_parent;
 	int retval;
 	unsigned long charge;
+	bool mmview = (common == oldmm->common);
 	LIST_HEAD(uf);
 
 	uprobe_start_dup_mmap();
@@ -505,10 +507,14 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	}
 	flush_cache_dup_mm(oldmm);
 	uprobe_dup_mmap(oldmm, mm);
+
+	mm_common_connect(common, mm);
+
 	/*
 	 * Not linked in yet - no deadlock potential:
 	 */
-	mmap_write_lock_nested(mm, SINGLE_DEPTH_NESTING);
+	if (!mmview)
+		mmap_write_lock_nested(mm, SINGLE_DEPTH_NESTING);
 
 	/* No ordering required: file already has been exposed. */
 	dup_mm_exe_file(mm, oldmm);
@@ -532,7 +538,7 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	for (mpnt = oldmm->mmap; mpnt; mpnt = mpnt->vm_next) {
 		struct file *file;
 
-		if (mpnt->vm_flags & VM_DONTCOPY) {
+		if (!mmview && mpnt->vm_flags & VM_DONTCOPY) {
 			vm_stat_account(mm, mpnt->vm_flags, -vma_pages(mpnt));
 			continue;
 		}
@@ -562,14 +568,15 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 		retval = dup_userfaultfd(tmp, &uf);
 		if (retval)
 			goto fail_nomem_anon_vma_fork;
-		if (tmp->vm_flags & VM_WIPEONFORK) {
+		if (!mmview && tmp->vm_flags & VM_WIPEONFORK) {
 			/*
 			 * VM_WIPEONFORK gets a clean slate in the child.
 			 * Don't prepare anon_vma until fault since we don't
 			 * copy page for current vma.
 			 */
 			tmp->anon_vma = NULL;
-		} else if (anon_vma_fork(tmp, mpnt))
+		} else if (mmview && mpnt->mmview_shared ? anon_vma_clone(tmp, mpnt)
+							 : anon_vma_fork(tmp, mpnt))
 			goto fail_nomem_anon_vma_fork;
 		tmp->vm_flags &= ~(VM_LOCKED | VM_LOCKONFAULT);
 		file = tmp->vm_file;
@@ -609,8 +616,8 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 		rb_parent = &tmp->vm_rb;
 
 		mm->map_count++;
-		if (!(tmp->vm_flags & VM_WIPEONFORK))
-			retval = copy_page_range(tmp, mpnt, false);
+		if (!(tmp->vm_flags & VM_WIPEONFORK) || mmview)
+			retval = copy_page_range(tmp, mpnt, mmview);
 
 		if (tmp->vm_ops && tmp->vm_ops->open)
 			tmp->vm_ops->open(tmp);
@@ -621,157 +628,18 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	/* a new mm has just been created */
 	retval = arch_dup_mmap(oldmm, mm);
 out:
-	mmap_write_unlock(mm);
+	if (!mmview)
+		mmap_write_unlock(mm);
 	flush_tlb_mm(oldmm);
 	{
-		/* Also flush the other mm views; */
-		/* they have been modified in copy_one_pte. */
+		/*
+		 * Also flush the other mm views, they have been modified
+		 * during copy_page_range.
+		 */
 		struct mm_struct *mm_cursor;
-		list_for_each_entry(mm_cursor,
-				    &oldmm->siblings,
-				    siblings) {
+		list_for_each_entry(mm_cursor, &oldmm->siblings, siblings)
 			flush_tlb_mm(mm_cursor);
-		}
 	}
-	mmap_write_unlock(oldmm);
-	dup_userfaultfd_complete(&uf);
-fail_uprobe_end:
-	uprobe_end_dup_mmap();
-	return retval;
-fail_nomem_anon_vma_fork:
-	mpol_put(vma_policy(tmp));
-fail_nomem_policy:
-	vm_area_free(tmp);
-fail_nomem:
-	retval = -ENOMEM;
-	vm_unacct_memory(charge);
-	goto out;
-}
-
-static __latent_entropy int mmview_dup_mmap(struct mm_struct *mm,
-					    struct mm_struct *oldmm)
-{
-	struct vm_area_struct *mpnt, *tmp, *prev, **pprev;
-	struct rb_node **rb_link, *rb_parent;
-	int retval;
-	unsigned long charge;
-	LIST_HEAD(uf);
-
-	uprobe_start_dup_mmap();
-	if (mmap_write_lock_killable(oldmm)) {
-		retval = -EINTR;
-		goto fail_uprobe_end;
-	}
-	flush_cache_dup_mm(oldmm);
-	uprobe_dup_mmap(oldmm, mm);
-
-	/* No ordering required: file already has been exposed. */
-	dup_mm_exe_file(mm, oldmm);
-
-	mm->total_vm = oldmm->total_vm;
-	mm->data_vm = oldmm->data_vm;
-	mm->exec_vm = oldmm->exec_vm;
-	mm->stack_vm = oldmm->stack_vm;
-
-	rb_link = &mm->mm_rb.rb_node;
-	rb_parent = NULL;
-	pprev = &mm->mmap;
-	retval = ksm_fork(mm, oldmm);
-	if (retval)
-		goto out;
-	retval = khugepaged_fork(mm, oldmm);
-	if (retval)
-		goto out;
-
-	prev = NULL;
-	for (mpnt = oldmm->mmap; mpnt; mpnt = mpnt->vm_next) {
-		struct file *file;
-
-		charge = 0;
-		/*
-		 * Don't duplicate many vmas if we've been oom-killed (for
-		 * example)
-		 */
-		if (fatal_signal_pending(current)) {
-			retval = -EINTR;
-			goto out;
-		}
-		if (mpnt->vm_flags & VM_ACCOUNT) {
-			unsigned long len = vma_pages(mpnt);
-
-			if (security_vm_enough_memory_mm(oldmm, len)) /* sic */
-				goto fail_nomem;
-			charge = len;
-		}
-		tmp = vm_area_dup(mpnt);
-		if (!tmp)
-			goto fail_nomem;
-		retval = vma_dup_policy(mpnt, tmp);
-		if (retval)
-			goto fail_nomem_policy;
-		tmp->vm_mm = mm;
-		retval = dup_userfaultfd(tmp, &uf);
-		if (retval)
-			goto fail_nomem_anon_vma_fork;
-		if (mpnt->mmview_shared ? anon_vma_clone(tmp, mpnt)
-					: anon_vma_fork(tmp, mpnt))
-			goto fail_nomem_anon_vma_fork;
-		tmp->vm_flags &= ~(VM_LOCKED | VM_LOCKONFAULT);
-		file = tmp->vm_file;
-		if (file) {
-			struct address_space *mapping = file->f_mapping;
-
-			get_file(file);
-			i_mmap_lock_write(mapping);
-			if (tmp->vm_flags & VM_SHARED)
-				mapping_allow_writable(mapping);
-			flush_dcache_mmap_lock(mapping);
-			/* insert tmp into the share list, just after mpnt */
-			vma_interval_tree_insert_after(tmp, mpnt,
-					&mapping->i_mmap);
-			flush_dcache_mmap_unlock(mapping);
-			i_mmap_unlock_write(mapping);
-		}
-
-		/*
-		 * Clear hugetlb-related page reserves for children. This only
-		 * affects MAP_PRIVATE mappings. Faults generated by the child
-		 * are not guaranteed to succeed, even if read-only
-		 */
-		if (is_vm_hugetlb_page(tmp))
-			reset_vma_resv_huge_pages(tmp);
-
-		/*
-		 * Link in the new vma and copy the page table entries.
-		 */
-		*pprev = tmp;
-		pprev = &tmp->vm_next;
-		tmp->vm_prev = prev;
-		prev = tmp;
-
-		__vma_link_rb(mm, tmp, rb_link, rb_parent);
-		rb_link = &tmp->vm_rb.rb_right;
-		rb_parent = &tmp->vm_rb;
-
-		mm->map_count++;
-
-		retval = copy_page_range(tmp, mpnt, true);
-
-		if (tmp->vm_ops && tmp->vm_ops->open)
-			tmp->vm_ops->open(tmp);
-
-		if (retval)
-			goto out;
-	}
-	/* a new mm has just been created */
-	retval = arch_dup_mmap(oldmm, mm);
-
-	/* Everything set up */
-	/* It is now safe to connect it to common and inc common->users */
-	mm_common_connect(oldmm->common, mm);
-	atomic_inc(&oldmm->common->users);
-out:
-	flush_tlb_mm(oldmm);
 	mmap_write_unlock(oldmm);
 	dup_userfaultfd_complete(&uf);
 fail_uprobe_end:
@@ -1197,7 +1065,7 @@ static struct mm_common *mm_common_new(struct mm_struct *base)
 	common->next_view_id = 0;
 	mmap_init_lock(common);
 	common->core_state = NULL;
-	atomic_set(&common->users, 1);
+	atomic_set(&common->users, 0);
 	atomic_set(&common->count, 0);
 	return common;
 }
@@ -1207,6 +1075,7 @@ static struct mm_common *mm_common_new(struct mm_struct *base)
  */
 static void mm_common_connect(struct mm_common *common, struct mm_struct *mm)
 {
+	atomic_inc(&common->users);
 	atomic_inc(&common->count);
 
 	mm->common = common;
@@ -1298,6 +1167,7 @@ struct mm_struct *mm_alloc(void)
 
 	mm_common_connect(common, mm);
 
+	set_bit(MMVIEW_AVAILABLE, &mm->view_flags);
 	return mm;
 
 fail_nomem:
@@ -1354,9 +1224,8 @@ void mmput(struct mm_struct *mm)
 	 * Also we cannot safely put it down because it may still be used
 	 * by sibling mms.
 	 */
-	if (atomic_dec_and_test(&mm->mm_users) &&
-	    test_bit(MMVIEW_REMOVED, &mm->view_flags) &&
-	    mm != common->base) {
+	if (atomic_dec_and_test(&mm->mm_users) && mm != common->base &&
+	    !test_bit(MMVIEW_AVAILABLE, &mm->view_flags)) {
 		mmap_write_lock(mm);
 		list_del(&mm->siblings);
 		mmap_write_unlock(mm);
@@ -1398,9 +1267,8 @@ void mmput_async(struct mm_struct *mm)
 	struct mm_struct *base = mm->common->base;
 
 	/* see mmput */
-	if (atomic_dec_and_test(&mm->mm_users) &&
-	    test_bit(MMVIEW_REMOVED, &mm->view_flags) &&
-	    mm != base) {
+	if (atomic_dec_and_test(&mm->mm_users) && mm != base &&
+	    !test_bit(MMVIEW_AVAILABLE, &mm->view_flags)) {
 		INIT_WORK(&mm->async_put_work, mmput_view_async_fn);
 		schedule_work(&mm->async_put_work);
 	} else if (atomic_dec_and_test(&common->users)) {
@@ -1680,72 +1548,18 @@ void exec_mm_release(struct task_struct *tsk, struct mm_struct *mm)
 }
 
 /**
- * mmview_dup_mm() - duplicates an existing mm structure for use with mmview
- * @tsk: the task_struct with which the new mm will be associated
- * 	 usually the group_leader.
- * @oldmm: the mm to duplicate.
- *
- * Allocates a new mm structure and duplicates the provided @oldmm structure
- * content into it.
- * Preserves the common pointer and inserts the new mm to the siblings list.
- *
- * Return: the duplicated mm or NULL on failure.
- */
-struct mm_struct *mmview_dup_mm(struct task_struct *tsk,
-				struct mm_struct *oldmm)
-{
-	struct mm_struct *mm;
-	int err;
-
-	mm = allocate_mm();
-	if (!mm)
-		goto fail_nomem;
-
-	memcpy(mm, oldmm, sizeof(*mm));
-
-	if (!mm_init(mm, tsk, mm->user_ns))
-		goto fail_nomem;
-
-	/*
-	 * mm_common_connect is called in mmview_dup_mmap
-	 * as the shared oldmm->common must be protected by the mmap_lock.
-	 */
-
-	err = mmview_dup_mmap(mm, oldmm);
-	if (err)
-		goto free_pt;
-
-	mm->hiwater_rss = get_mm_rss(mm);
-	mm->hiwater_vm = mm->total_vm;
-
-	return mm;
-
-free_pt:
-	/* don't put binfmt in mmput, we haven't got module yet */
-	mm->binfmt = NULL;
-	mm_init_owner(mm, NULL);
-
-	/* mm is not connected to common when mmview_dup_mmap fails */
-	BUG_ON(mm->common);
-	BUG_ON(!atomic_dec_and_test(&mm->mm_users));
-	__mmput(mm);
-
-fail_nomem:
-	return NULL;
-}
-
-/**
- * dup_mm() - duplicates an existing mm structure
+ * dup_mm() - duplicates an existing mm structure for fork or use with mmview
  * @tsk: the task_struct with which the new mm will be associated.
  * @oldmm: the mm to duplicate.
+ * @mmview: whether the new mm is a view.
  *
  * Allocates a new mm structure and duplicates the provided @oldmm structure
  * content into it.
  *
  * Return: the duplicated mm or NULL on failure.
  */
-static struct mm_struct *dup_mm(struct task_struct *tsk,
-				struct mm_struct *oldmm)
+struct mm_struct *dup_mm(struct task_struct *tsk, struct mm_struct *oldmm,
+			 bool mmview)
 {
 	struct mm_struct *mm;
 	struct mm_common *common;
@@ -1757,16 +1571,14 @@ static struct mm_struct *dup_mm(struct task_struct *tsk,
 
 	memcpy(mm, oldmm, sizeof(*mm));
 
-	common = mm_common_new(mm);
-	if (!common)
-		goto fail_nomem_common;
-
 	if (!mm_init(mm, tsk, mm->user_ns))
 		goto fail_nomem;
 
-	mm_common_connect(common, mm);
+	common = mmview ? oldmm->common : mm_common_new(mm);
+	if (!common)
+		goto free_pt;
 
-	err = dup_mmap(mm, oldmm);
+	err = dup_mmap(mm, oldmm, common);
 	if (err)
 		goto free_pt;
 
@@ -1776,17 +1588,24 @@ static struct mm_struct *dup_mm(struct task_struct *tsk,
 	if (mm->binfmt && !try_module_get(mm->binfmt->module))
 		goto free_pt;
 
+	set_bit(MMVIEW_AVAILABLE, &mm->view_flags);
 	return mm;
 
 free_pt:
 	/* don't put binfmt in mmput, we haven't got module yet */
 	mm->binfmt = NULL;
 	mm_init_owner(mm, NULL);
-	mmput(mm);
+	if (!mm->common) {
+		/* Neither vmas nor page tables have been copied over yet */
+		if (!mmview)
+			kfree(common);
+		BUG_ON(!atomic_dec_and_test(&mm->mm_users));
+		BUG_ON(!atomic_dec_and_test(&mm->mm_count));
+		__mmdrop(mm);
+	} else
+		mmput(mm);
 
 fail_nomem:
-	kfree(common);
-fail_nomem_common:
 	return NULL;
 }
 
@@ -1820,7 +1639,7 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 		mmget(oldmm);
 		mm = oldmm;
 	} else {
-		mm = dup_mm(tsk, current->mm);
+		mm = dup_mm(tsk, current->mm, false);
 		if (!mm)
 			return -ENOMEM;
 	}
@@ -2825,7 +2644,7 @@ struct task_struct * __init fork_idle(int cpu)
 
 struct mm_struct *copy_init_mm(void)
 {
-	return dup_mm(NULL, &init_mm);
+	return dup_mm(NULL, &init_mm, false);
 }
 
 /*
