@@ -1761,8 +1761,7 @@ struct mmu_notifier_range;
 void free_pgd_range(struct mmu_gather *tlb, unsigned long addr,
 		unsigned long end, unsigned long floor, unsigned long ceiling);
 int
-copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
-		bool is_mmview);
+copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma);
 int follow_invalidate_pte(struct mm_struct *mm, unsigned long address,
 			  struct mmu_notifier_range *range, pte_t **ptepp,
 			  pmd_t **pmdpp, spinlock_t **ptlp);

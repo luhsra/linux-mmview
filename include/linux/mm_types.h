@@ -613,6 +613,11 @@ static inline bool mm_has_views(struct mm_struct *mm)
 	return !list_empty(&mm->siblings);
 }
 
+static inline bool mm_is_base(struct mm_struct *mm)
+{
+	return mm == mm->common->base;
+}
+
 /* Pointer magic because the dynamic array size confuses some compilers. */
 static inline void mm_init_cpumask(struct mm_struct *mm)
 {

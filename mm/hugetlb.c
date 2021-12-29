@@ -4268,13 +4268,14 @@ hugetlb_install_page(struct vm_area_struct *vma, pte_t *ptep, unsigned long addr
 }
 
 int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
-			    struct vm_area_struct *vma, bool is_mmview)
+			    struct vm_area_struct *vma)
 {
 	pte_t *src_pte, *dst_pte, entry, dst_entry;
 	struct page *ptepage;
 	unsigned long addr;
+	bool mmview = !mm_is_base(dst);
 	bool cow = is_cow_mapping(vma->vm_flags) &&
-		!(is_mmview && vma->mmview_shared);
+		!(mmview && vma->mmview_shared);
 	struct hstate *h = hstate_vma(vma);
 	unsigned long sz = huge_page_size(h);
 	unsigned long npages = pages_per_huge_page(h);
@@ -4411,7 +4412,7 @@ again:
 				entry = huge_pte_wrprotect(entry);
 			}
 
-			page_dup_rmap(ptepage, true, is_mmview);
+			page_dup_rmap(ptepage, true, mmview);
 			set_huge_pte_at(dst, addr, dst_pte, entry);
 			hugetlb_count_add(npages, dst);
 		}
@@ -4440,8 +4441,6 @@ void __unmap_hugepage_range(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	struct hstate *h = hstate_vma(vma);
 	unsigned long sz = huge_page_size(h);
 	struct mmu_notifier_range range;
-	/* mm->common can be NULL when called from mmview_dup_mm */
-	bool is_mmview = !mm->common || mm != mm->common->base;
 
 	WARN_ON(!is_vm_hugetlb_page(vma));
 	BUG_ON(start & ~huge_page_mask(h));
@@ -4518,7 +4517,7 @@ void __unmap_hugepage_range(struct mmu_gather *tlb, struct vm_area_struct *vma,
 			set_page_dirty(page);
 
 		hugetlb_count_sub(pages_per_huge_page(h), mm);
-		page_remove_rmap(page, true, is_mmview);
+		page_remove_rmap(page, true, !mm_is_base(mm));
 
 		spin_unlock(ptl);
 		tlb_remove_page_size(tlb, page, huge_page_size(h));
@@ -4652,7 +4651,7 @@ retry_avoidcopy:
 		return 0;
 	}
 
-	if (vma->mmview_shared && mm != mm->common->base)
+	if (vma->mmview_shared && !mm_is_base(mm))
 		return VM_FAULT_VIEW_RETRY;
 
 	/*
@@ -4771,7 +4770,7 @@ retry_avoidcopy:
 		mmu_notifier_invalidate_range(mm, range.start, range.end);
 		set_huge_pte_at(mm, haddr, ptep,
 				make_huge_pte(vma, new_page, 1));
-		page_remove_rmap(old_page, true, mm != mm->common->base);
+		page_remove_rmap(old_page, true, !mm_is_base(mm));
 		hugepage_add_new_anon_rmap(new_page, vma, haddr);
 		SetHPageMigratable(new_page);
 		/* Make the old page be freed below */
@@ -5021,7 +5020,7 @@ retry:
 		ClearHPageRestoreReserve(page);
 		hugepage_add_new_anon_rmap(page, vma, haddr);
 	} else
-		page_dup_rmap(page, true, mm != mm->common->base);
+		page_dup_rmap(page, true, !mm_is_base(mm));
 	new_pte = make_huge_pte(vma, page, ((vma->vm_flags & VM_WRITE)
 				&& (vma->vm_flags & VM_SHARED)));
 	set_huge_pte_at(mm, haddr, ptep, new_pte);
@@ -5208,7 +5207,7 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	entry = huge_ptep_get(ptep);
 	if (huge_pte_none(entry)) {
 		if (!(vma->vm_flags & VM_SHARED) && vma->mmview_shared &&
-		    mm != mm->common->base) {
+		    !mm_is_base(mm)) {
 			ret = mmview_sync_hugetlb_page(vma, haddr, ptep);
 			goto out_mutex;
 		}
@@ -5451,7 +5450,7 @@ int hugetlb_mcopy_atomic_pte(struct mm_struct *dst_mm,
 		goto out_release_unlock;
 
 	if (vm_shared) {
-		page_dup_rmap(page, true, dst_mm != dst_mm->common->base);
+		page_dup_rmap(page, true, !mm_is_base(dst_mm));
 	} else {
 		ClearHPageRestoreReserve(page);
 		hugepage_add_new_anon_rmap(page, dst_vma, dst_addr);
@@ -5807,7 +5806,7 @@ bool hugetlb_reserve_pages(struct inode *inode,
 	 * attempt will be made for VM_NORESERVE to allocate a page
 	 * without using reserves
 	 */
-	if (vm_flags & VM_NORESERVE || (mm != mm->common->base && vma->mmview_shared))
+	if (vm_flags & VM_NORESERVE || (!mm_is_base(mm) && vma->mmview_shared))
 		return true;
 
 	/*

@@ -133,7 +133,7 @@ int hugetlb_mempolicy_sysctl_handler(struct ctl_table *, int, void *, size_t *,
 		loff_t *);
 
 int copy_hugetlb_page_range(struct mm_struct *, struct mm_struct *,
-			    struct vm_area_struct *, bool);
+			    struct vm_area_struct *);
 long follow_hugetlb_page(struct mm_struct *, struct vm_area_struct *,
 			 struct page **, struct vm_area_struct **,
 			 unsigned long *, unsigned long *, long, unsigned int,

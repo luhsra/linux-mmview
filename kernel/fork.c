@@ -617,7 +617,7 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 
 		mm->map_count++;
 		if (!(tmp->vm_flags & VM_WIPEONFORK) || mmview)
-			retval = copy_page_range(tmp, mpnt, mmview);
+			retval = copy_page_range(tmp, mpnt);
 
 		if (tmp->vm_ops && tmp->vm_ops->open)
 			tmp->vm_ops->open(tmp);
@@ -1224,7 +1224,7 @@ void mmput(struct mm_struct *mm)
 	 * Also we cannot safely put it down because it may still be used
 	 * by sibling mms.
 	 */
-	if (atomic_dec_and_test(&mm->mm_users) && mm != common->base &&
+	if (atomic_dec_and_test(&mm->mm_users) && !mm_is_base(mm) &&
 	    !test_bit(MMVIEW_AVAILABLE, &mm->view_flags)) {
 		mmap_write_lock(mm);
 		list_del(&mm->siblings);

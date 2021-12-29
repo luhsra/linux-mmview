@@ -771,9 +771,9 @@ try_restore_exclusive_pte(pte_t *src_pte, struct vm_area_struct *vma,
 static unsigned long
 copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 		pte_t *dst_pte, pte_t *src_pte, struct vm_area_struct *dst_vma,
-		struct vm_area_struct *src_vma, unsigned long addr, int *rss,
-		bool is_mmview)
+		struct vm_area_struct *src_vma, unsigned long addr, int *rss)
 {
+	bool is_mmview = !mm_is_base(dst_mm);
 	unsigned long vm_flags = dst_vma->vm_flags;
 	pte_t pte = *src_pte;
 	struct page *page;
@@ -943,8 +943,9 @@ copy_present_page(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 static inline int
 copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		 pte_t *dst_pte, pte_t *src_pte, unsigned long addr, int *rss,
-		 struct page **prealloc, bool is_mmview)
+		 struct page **prealloc)
 {
+	bool is_mmview = !mm_is_base(dst_vma->vm_mm);
 	struct mm_struct *src_mm = src_vma->vm_mm;
 	unsigned long vm_flags = src_vma->vm_flags;
 	pte_t pte = *src_pte;
@@ -1014,7 +1015,7 @@ page_copy_prealloc(struct mm_struct *src_mm, struct vm_area_struct *vma,
 static int
 copy_pte_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	       pmd_t *dst_pmd, pmd_t *src_pmd, unsigned long addr,
-	       unsigned long end, bool is_mmview)
+	       unsigned long end)
 {
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
 	struct mm_struct *src_mm = src_vma->vm_mm;
@@ -1061,7 +1062,7 @@ again:
 			ret = copy_nonpresent_pte(dst_mm, src_mm,
 						  dst_pte, src_pte,
 						  dst_vma, src_vma,
-						  addr, rss, is_mmview);
+						  addr, rss);
 			if (ret == -EIO) {
 				entry = pte_to_swp_entry(*src_pte);
 				break;
@@ -1080,7 +1081,7 @@ again:
 		}
 		/* copy_present_pte() will clear `*prealloc' if consumed */
 		ret = copy_present_pte(dst_vma, src_vma, dst_pte, src_pte,
-				       addr, rss, &prealloc, is_mmview);
+				       addr, rss, &prealloc);
 		/*
 		 * If we need a pre-allocated page for this pte, drop the
 		 * locks, allocate, and try again.
@@ -1138,7 +1139,7 @@ out:
 static inline int
 copy_pmd_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	       pud_t *dst_pud, pud_t *src_pud, unsigned long addr,
-	       unsigned long end, bool is_mmview)
+	       unsigned long end)
 {
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
 	struct mm_struct *src_mm = src_vma->vm_mm;
@@ -1166,7 +1167,7 @@ copy_pmd_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		if (pmd_none_or_clear_bad(src_pmd))
 			continue;
 		if (copy_pte_range(dst_vma, src_vma, dst_pmd, src_pmd,
-				   addr, next, is_mmview))
+				   addr, next))
 			return -ENOMEM;
 	} while (dst_pmd++, src_pmd++, addr = next, addr != end);
 	return 0;
@@ -1175,7 +1176,7 @@ copy_pmd_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 static inline int
 copy_pud_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	       p4d_t *dst_p4d, p4d_t *src_p4d, unsigned long addr,
-	       unsigned long end, bool is_mmview)
+	       unsigned long end)
 {
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
 	struct mm_struct *src_mm = src_vma->vm_mm;
@@ -1203,7 +1204,7 @@ copy_pud_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		if (pud_none_or_clear_bad(src_pud))
 			continue;
 		if (copy_pmd_range(dst_vma, src_vma, dst_pud, src_pud,
-				   addr, next, is_mmview))
+				   addr, next))
 			return -ENOMEM;
 	} while (dst_pud++, src_pud++, addr = next, addr != end);
 	return 0;
@@ -1212,7 +1213,7 @@ copy_pud_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 static inline int
 copy_p4d_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 	       pgd_t *dst_pgd, pgd_t *src_pgd, unsigned long addr,
-	       unsigned long end, bool is_mmview)
+	       unsigned long end)
 {
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
 	p4d_t *src_p4d, *dst_p4d;
@@ -1227,7 +1228,7 @@ copy_p4d_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 		if (p4d_none_or_clear_bad(src_p4d))
 			continue;
 		if (copy_pud_range(dst_vma, src_vma, dst_p4d, src_p4d,
-				   addr, next, is_mmview))
+				   addr, next))
 			return -ENOMEM;
 	} while (dst_p4d++, src_p4d++, addr = next, addr != end);
 	return 0;
@@ -1299,8 +1300,7 @@ static void mmview_wrprotect_siblings(struct mm_struct *mm,
 }
 
 int
-	copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
-			bool is_mmview)
+copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
 {
 	pgd_t *src_pgd, *dst_pgd;
 	unsigned long next;
@@ -1309,6 +1309,7 @@ int
 	struct mm_struct *dst_mm = dst_vma->vm_mm;
 	struct mm_struct *src_mm = src_vma->vm_mm;
 	struct mmu_notifier_range range;
+	bool is_mmview = !mm_is_base(dst_vma->vm_mm);
 	bool is_cow;
 	int ret;
 
@@ -1332,7 +1333,7 @@ int
 		!(is_mmview && src_vma->mmview_shared);
 
 	if (is_vm_hugetlb_page(src_vma)) {
-		ret = copy_hugetlb_page_range(dst_mm, src_mm, src_vma, is_mmview);
+		ret = copy_hugetlb_page_range(dst_mm, src_mm, src_vma);
 		goto out_wrprotect_siblings;
 	}
 
@@ -1369,7 +1370,7 @@ int
 		if (pgd_none_or_clear_bad(src_pgd))
 			continue;
 		if (unlikely(copy_p4d_range(dst_vma, src_vma, dst_pgd, src_pgd,
-					    addr, next, is_mmview))) {
+					    addr, next))) {
 			ret = -ENOMEM;
 			goto out;
 		}
@@ -1400,8 +1401,6 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 	pte_t *start_pte;
 	pte_t *pte;
 	swp_entry_t entry;
-	/* mm->common can be NULL when called from mmview_dup_mm */
-	bool is_mmview = !mm->common || mm != mm->common->base;
 
 	tlb_change_page_size(tlb, PAGE_SIZE);
 again:
@@ -1448,7 +1447,7 @@ again:
 					mark_page_accessed(page);
 			}
 			rss[mm_counter(page)]--;
-			page_remove_rmap(page, false, is_mmview);
+			page_remove_rmap(page, false, !mm_is_base(mm));
 			if (unlikely(page_mapcount(page) < 0))
 				print_bad_pte(vma, addr, ptent, page);
 			if (unlikely(__tlb_remove_page(tlb, page))) {
@@ -1479,7 +1478,7 @@ again:
 			rss[mm_counter(page)]--;
 
 			if (is_device_private_entry(entry))
-				page_remove_rmap(page, false, is_mmview);
+				page_remove_rmap(page, false, !mm_is_base(mm));
 
 			put_page(page);
 			continue;
@@ -3194,7 +3193,7 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 			 * mapcount is visible. So transitively, TLBs to
 			 * old page will be flushed before it can be reused.
 			 */
-			page_remove_rmap(old_page, false, mm != mm->common->base);
+			page_remove_rmap(old_page, false, !mm_is_base(mm));
 		}
 
 		/* Free the old page.. */
@@ -3430,7 +3429,7 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 		return wp_page_shared(vmf);
 	}
 copy:
-	if (vma->mmview_shared && vma->vm_mm != vma->vm_mm->common->base) {
+	if (vma->mmview_shared && !mm_is_base(vma->vm_mm)) {
 		pte_unmap_unlock(vmf->pte, vmf->ptl);
 		return VM_FAULT_VIEW_RETRY;
 	}
@@ -4757,8 +4756,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 
 	if (!vmf->pte) {
 		if (!(vmf->vma->vm_flags & VM_SHARED) &&
-		    vmf->vma->mmview_shared &&
-		    vmf->vma->vm_mm != vmf->vma->vm_mm->common->base) {
+		    vmf->vma->mmview_shared && !mm_is_base(vmf->vma->vm_mm)) {
 			/*
 			 * Oh, this vma is possibly shared in multiple views.
 			 * Let's check if the page is already mapped in the
@@ -4781,7 +4779,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) {
-		WARN_ON(vmf->vma->vm_mm != vmf->vma->vm_mm->common->base);
+		WARN_ON(!mm_is_base(vmf->vma->vm_mm));
 		return do_numa_page(vmf);
 	}
 

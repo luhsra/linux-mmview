@@ -1122,8 +1122,6 @@ void do_page_add_anon_rmap(struct page *page,
 	struct vm_area_struct *vma, unsigned long address, int flags)
 {
 	bool compound = flags & RMAP_COMPOUND;
-	bool mmview = !vma->vm_mm->common ||
-		vma->vm_mm != vma->vm_mm->common->base;
 	bool first;
 
 	if (unlikely(PageKsm(page)))
@@ -1137,11 +1135,11 @@ void do_page_add_anon_rmap(struct page *page,
 		VM_BUG_ON_PAGE(!PageTransHuge(page), page);
 		mapcount = compound_mapcount_ptr(page);
 		first = atomic_inc_and_test(mapcount);
-		if (mmview)
+		if (!mm_is_base(vma->vm_mm))
 			atomic_inc(compound_viewcount_ptr(page));
 	} else {
 		first = atomic_inc_and_test(&page->_mapcount);
-		if (mmview)
+		if (!mm_is_base(vma->vm_mm))
 			atomic_inc(&page->_viewcount);
 	}
 
@@ -1186,8 +1184,8 @@ void page_add_new_anon_rmap(struct page *page,
 	struct vm_area_struct *vma, unsigned long address, bool compound)
 {
 	int nr = compound ? thp_nr_pages(page) : 1;
-	bool mmview = !vma->vm_mm->common ||
-		vma->vm_mm != vma->vm_mm->common->base;
+
+	WARN_ON(vma->mmview_shared && !mm_is_base(vma->vm_mm));
 
 	VM_BUG_ON_VMA(address < vma->vm_start || address >= vma->vm_end, vma);
 	__SetPageSwapBacked(page);
@@ -1195,7 +1193,8 @@ void page_add_new_anon_rmap(struct page *page,
 		VM_BUG_ON_PAGE(!PageTransHuge(page), page);
 		/* increment count (starts at -1) */
 		atomic_set(compound_mapcount_ptr(page), 0);
-		atomic_set(compound_viewcount_ptr(page), mmview ? 1 : 0);
+		atomic_set(compound_viewcount_ptr(page),
+			   mm_is_base(vma->vm_mm) ? 0 : 1);
 		if (hpage_pincount_available(page))
 			atomic_set(compound_pincount_ptr(page), 0);
 
@@ -1205,7 +1204,7 @@ void page_add_new_anon_rmap(struct page *page,
 		VM_BUG_ON_PAGE(PageTransCompound(page), page);
 		/* increment count (starts at -1) */
 		atomic_set(&page->_mapcount, 0);
-		atomic_set(&page->_viewcount, mmview ? 1 : 0);
+		atomic_set(&page->_viewcount, mm_is_base(vma->vm_mm) ? 0 : 1);
 	}
 	__mod_lruvec_page_state(page, NR_ANON_MAPPED, nr);
 	__page_set_anon_rmap(page, vma, address, 1);
@@ -1660,8 +1659,7 @@ discard:
 		 *
 		 * See Documentation/vm/mmu_notifier.rst
 		 */
-		page_remove_rmap(subpage, PageHuge(page),
-				 vma->vm_mm != vma->vm_mm->common->base);
+		page_remove_rmap(subpage, PageHuge(page), !mm_is_base(vma->vm_mm));
 		put_page(page);
 	}
 
@@ -1931,7 +1929,7 @@ static bool try_to_migrate_one(struct page *page, struct vm_area_struct *vma,
 		 *
 		 * See Documentation/vm/mmu_notifier.rst
 		 */
-		page_remove_rmap(subpage, PageHuge(page), mm != mm->common->base);
+		page_remove_rmap(subpage, PageHuge(page), !mm_is_base(mm));
 		put_page(page);
 	}
 
