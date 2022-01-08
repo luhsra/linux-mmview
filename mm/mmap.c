@@ -1624,7 +1624,7 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 		*populate = len;
 
 	/* Do the same for all mm views */
-	if (mm_has_views(mm)) {
+	if (!IS_ERR_VALUE(addr) && mm_has_views(mm)) {
 		struct mm_struct *mm_cursor;
 		unsigned long other_addr;
 
@@ -1675,6 +1675,15 @@ unsigned long ksys_mmap_pgoff(unsigned long addr, unsigned long len,
 				VM_NORESERVE,
 				&ucounts, HUGETLB_ANONHUGE_INODE,
 				(flags >> MAP_HUGE_SHIFT) & MAP_HUGE_MASK);
+		if (IS_ERR(file))
+			return PTR_ERR(file);
+	} else if (flags & MAP_SHARED) {
+		unsigned long shmem_flags = 0;
+		if (flags & MAP_NORESERVE &&
+		    sysctl_overcommit_memory != OVERCOMMIT_NEVER)
+			shmem_flags = VM_NORESERVE;
+
+		file = shmem_kernel_file_setup("dev/zero", len, shmem_flags);
 		if (IS_ERR(file))
 			return PTR_ERR(file);
 	}
@@ -1880,10 +1889,6 @@ unsigned long mmap_region(struct mm_struct *mm, struct file *file,
 		}
 
 		vm_flags = vma->vm_flags;
-	} else if (vm_flags & VM_SHARED) {
-		error = shmem_zero_setup(vma);
-		if (error)
-			goto free_vma;
 	} else {
 		vma_set_anonymous(vma);
 	}
