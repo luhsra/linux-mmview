@@ -74,6 +74,7 @@
 #include <linux/ptrace.h>
 #include <linux/vmalloc.h>
 #include <linux/pagewalk.h>
+#include <linux/mmview.h>
 
 #include <trace/events/kmem.h>
 
@@ -3022,6 +3023,31 @@ static vm_fault_t fault_dirty_shared_page(struct vm_fault *vmf)
 	return 0;
 }
 
+/**
+ * mmview_zap_page - remove user page for all sibling views
+ * @mm: mm_struct of the address space
+ * @addr: address of the page to zap
+ *
+ * Called with mmap_lock at least on read.
+ */
+void mmview_zap_page(struct mm_struct *mm, unsigned long addr)
+{
+	struct mm_struct *mm_cursor;
+	struct vm_area_struct *vma;
+
+	list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
+		vma = find_vma(mm_cursor, addr);
+		if (is_vm_hugetlb_page(vma)) {
+			struct hstate *h = hstate_vma(vma);
+			unmap_hugepage_range(vma, addr, addr + huge_page_size(h),
+					     NULL);
+		} else {
+			zap_page_range_single(vma, addr, PAGE_SIZE, NULL);
+		}
+	}
+}
+
+
 /*
  * Handle write page faults for pages that can be reused in the current vma
  *
@@ -3119,14 +3145,9 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	 * mmview_sync_page using mmap write lock.
 	 */
 	if (mm_has_views(mm) && vma->mmview_shared) {
-		struct mm_struct *mm_cursor;
-		struct vm_area_struct *vma_cursor;
 		mmap_read_unlock(mm);
 		mmap_write_lock(mm);
-		list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
-			vma_cursor = find_vma(mm_cursor, vmf->address);
-			zap_page_range_single(vma_cursor, vmf->address, PAGE_SIZE, NULL);
-		}
+		mmview_zap_page(mm, vmf->address);
 	}
 
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
@@ -3807,8 +3828,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		put_page(swapcache);
 	}
 
-	if (vmf->flags & FAULT_FLAG_WRITE && !(mm_has_views(vmf->vma->vm_mm) &&
-					       vmf->vma->mmview_shared)) {
+	if (vmf->flags & FAULT_FLAG_WRITE) {
 		ret |= do_wp_page(vmf);
 		if (ret & VM_FAULT_ERROR)
 			ret &= VM_FAULT_ERROR;
@@ -4772,10 +4792,20 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 
 	if (!pte_present(vmf->orig_pte)) {
-		vm_fault_t ret = do_swap_page(vmf);
-		if (!(ret & VM_FAULT_ERROR))
-			ret |= VM_FAULT_DONE_SWAP;
-		return ret;
+		if (vmf->vma->mmview_shared && !(vmf->vma->vm_flags & VM_SHARED)) {
+			vm_fault_t ret;
+
+			if (!mm_is_base(vmf->vma->vm_mm))
+				return VM_FAULT_VIEW_RETRY;
+
+			ret = do_swap_page(vmf);
+			if (!(ret & (VM_FAULT_ERROR | VM_FAULT_RETRY)))
+				mmview_zap_page(vmf->vma->vm_mm, vmf->address);
+
+			return ret;
+		}
+
+		return do_swap_page(vmf);
 	}
 
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) {

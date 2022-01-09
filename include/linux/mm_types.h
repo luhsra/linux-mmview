@@ -755,8 +755,6 @@ typedef __bitwise unsigned int vm_fault_t;
  *				in DAX)
  * @VM_FAULT_VIEW_RETRY:	Sibling page not found, retry after a fault in
  *				base mm
- * @VM_FAULT_DONE_SWAP:		->fault has loaded a page from swap (might need
- *				to do the same for sibling mms)
  * @VM_FAULT_HINDEX_MASK:	mask HINDEX value
  *
  */
@@ -775,7 +773,6 @@ enum vm_fault_reason {
 	VM_FAULT_DONE_COW       = (__force vm_fault_t)0x001000,
 	VM_FAULT_NEEDDSYNC      = (__force vm_fault_t)0x002000,
 	VM_FAULT_VIEW_RETRY     = (__force vm_fault_t)0x004000,
-	VM_FAULT_DONE_SWAP      = (__force vm_fault_t)0x008000,
 	VM_FAULT_HINDEX_MASK    = (__force vm_fault_t)0x0f0000,
 };
 

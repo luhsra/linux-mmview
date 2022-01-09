@@ -31,6 +31,7 @@
 #include <linux/llist.h>
 #include <linux/cma.h>
 #include <linux/migrate.h>
+#include <linux/mmview.h>
 
 #include <asm/page.h>
 #include <asm/pgalloc.h>
@@ -4738,18 +4739,12 @@ retry_avoidcopy:
 			    pages_per_huge_page(h));
 	__SetPageUptodate(new_page);
 
-	if (mm_has_views(mm) && vma->mmview_shared) {
-		struct mm_struct *mm_cursor;
-		struct vm_area_struct *vma_cursor;
+	if (vma->mmview_shared) {
 		/*
 		 * hugetlb_fault_mutex_table protects here against concurrent
 		 * mmview_sync_hugetlb_page reinstating the old page.
 		 */
-		list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
-			vma_cursor = find_vma(mm_cursor, address);
-			unmap_hugepage_range(vma_cursor, haddr,
-					     haddr + huge_page_size(h), NULL);
-		}
+		mmview_zap_page(mm, haddr);
 	}
 
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm, haddr,
