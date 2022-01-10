@@ -1,0 +1,105 @@
+* Linux with mmview extensions
+
+The goal of the mmview extensions is to provide means to create additional
+address spaces, called /views/ in the userspace.  The views are selectable on
+the thread level and are generally kept in sync with the original address space.
+Users of the extension can designate specific regions as copy-on-write, allowing
+them to diverge between views or threads.
+
+** Usage
+
+- ~long mmview_unshare(void *addr, size_t len)~
+
+  Designates memory pages containing any part of the address range in the
+  interval =[addr, addr+len-1]= as unshared.  Must be called before any
+  additional views are created.  ~addr~ must be aligned to a page boundary.
+
+  Returns 0 on success.  On failure, -1 is returned and errno is set
+  appropriately:
+
+  | ~EPERM~  | Calling process already has additional views.        |
+  | ~EINVAL~ | An invalid address range has been specified.         |
+  | ~EACCES~ | Memory contained in the interval cannot be unshared. |
+
+- ~long mmview_create(void)~
+
+  Creates an additional address space view.
+
+  Returns id on success.  On failure, -1 is returned and errno is set
+  appropriately:
+
+  | ~ENOMEM~ | Out of memory. |
+
+- ~long mmview_migrate(long id)~
+
+  Migrates current thread to the address space view referenced by ~id~.
+
+  Returns id of the previous address space view on success or id of the current
+  view in case an invalid id (<0) is passed.  On failure, -1 is returned and
+  errno is set appropriately:
+
+  | ~EINVAL~ | Address space view referenced by ~id~ does not exist. |
+
+- ~long mmview_delete(long id)~
+
+  Marks the address space view referenced by ~id~ for deletion.  Its resources
+  will be freed after the last thread stops using it.
+
+  Returns 0 on success.  On failure, -1 is returned and errno is set
+  appropriately:
+
+  | ~EINVAL~ | Address space view referenced by ~id~ does not exist. |
+
+System call wrappers along with the test suite can be found in the [[https://scm.sra.uni-hannover.de/source/mmview-tests][Phabricator]].
+
+** News
+
+*** Updated kernel to 5.15
+
+Updating the kernel tree revealed a few bugs, some of which were previously
+non-reproducible:
+
+- Page fault handler returning with ~VM_FAULT_RETRY~ drops the ~mmap_lock~.  In
+  case the fault is initiated in base mm the lock has to be retaken.
+- Streamlined creation of new mms, ensuring that mms without ~common~ are not
+  exposed to the outside world.
+- Fixed broken anonymous ~VM_SHARED~ mappings, where a separate file was created
+  for each view in ~mmap_region~.
+- Zapping instead of refaulting after swap-in of shared mmview pages achieved a
+  modest speed improvement during swapping.
+
+*** Revamped zapping of shared mmview pages on copy
+
+- Fixed race condition where a concurrent fault could restore the old page after
+  zapping.
+- No more redundant zapping such as when reusing a page or managing software
+  dirty/young bits.
+- A new reference counter in ~struct page~ tracks the amount of page table
+  entries referencing the page from a non-base view.  This allows reliably
+  detecting cases where a shared mmview page can be reused on write fault.
+
+*** Added general multiarch support (ARM)
+
+- Converted types to allow clean compilation on 32-bit architectures.
+- Fixed invalid usage of high memory mappings in the pagefault handler.
+- Modified pagefault handler to account for architectures with software
+  emulated dirty/young bits.
+
+*** Revisited ~copy_page_range~
+
+~copy_page_range~ called during ~fork~ or ~mmview_create~ system calls now uses
+pagewalk API to write-protect the views in the COW-case.  This change has
+allowed proper usage of the secondary mmu notifier, which is required when
+modifying protection bits of the PTEs.
+
+*** Added hugepages support
+
+*** Coredumping support
+
+Structures facilitating coredumping need to be shared among threads which wasn't
+the case if threads used different views.
+
+*** Swapping support for anonymous mappings
+
+Reverse mapping structures (~anon_vma~) were missing for non-base views, which
+prevented swap-out of pages referenced by these views.
