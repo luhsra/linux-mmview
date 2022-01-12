@@ -205,12 +205,12 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
 	/* page_table_lock to protect against threads */
 	spin_lock(&mm->page_table_lock);
 	if (likely(!vma->anon_vma)) {
-		vma->anon_vma = anon_vma;
 		anon_vma_chain_link(vma, avc, anon_vma);
 		/* vma reference or self-parent link for new root */
 		anon_vma->degree++;
 		allocated = NULL;
 		avc = NULL;
+		smp_store_release(&vma->anon_vma, anon_vma);
 	}
 	spin_unlock(&mm->page_table_lock);
 	anon_vma_unlock_write(anon_vma);

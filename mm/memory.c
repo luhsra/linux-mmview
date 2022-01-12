@@ -3869,6 +3869,7 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 {
 	struct vm_area_struct *base_vma, *vma = vmf->vma;
 	struct mm_struct *base_mm = vma->vm_mm->common->base;
+	struct anon_vma *anon_vma = NULL;
 	struct page *page;
 	pte_t *ptep;
 	spinlock_t *ptl;
@@ -3880,15 +3881,10 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 	base_vma = find_extend_vma(base_mm, vmf->address);
 	BUG_ON(!base_vma);
 
-	/* page_table_lock to protect against threads and __anon_vma_prepare */
-	spin_lock(&base_mm->page_table_lock);
-	if (base_vma->anon_vma && !vma->anon_vma) {
-		vma->anon_vma = base_vma->anon_vma;
-		spin_unlock(&base_mm->page_table_lock);
+	anon_vma = smp_load_acquire(&base_vma->anon_vma);
+	if (anon_vma && !cmpxchg(&vma->anon_vma, NULL, anon_vma))
 		if (anon_vma_clone(vma, base_vma))
 			return VM_FAULT_OOM;
-	} else
-		spin_unlock(&base_mm->page_table_lock);
 
 	ret = VM_FAULT_VIEW_RETRY;
 	if (follow_pte(base_mm, vmf->address, &ptep, &ptl))
