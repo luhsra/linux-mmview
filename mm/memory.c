@@ -3038,9 +3038,11 @@ void mmview_zap_page(struct mm_struct *mm, unsigned long addr)
 	list_for_each_entry(mm_cursor, &mm->siblings, siblings) {
 		vma = find_vma(mm_cursor, addr);
 		if (is_vm_hugetlb_page(vma)) {
+#ifdef CONFIG_HUGETLB_PAGE
 			struct hstate *h = hstate_vma(vma);
 			unmap_hugepage_range(vma, addr, addr + huge_page_size(h),
 					     NULL);
+#endif
 		} else {
 			zap_page_range_single(vma, addr, PAGE_SIZE, NULL);
 		}
