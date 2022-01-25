@@ -3105,6 +3105,12 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	int page_copied = 0;
 	struct mmu_notifier_range range;
 
+	if (vma->mmview_shared && !mm_is_base(mm)) {
+		if (old_page)
+			put_page(old_page);
+		return VM_FAULT_VIEW_RETRY;
+	}
+
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
 
@@ -3450,11 +3456,6 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 		return wp_page_shared(vmf);
 	}
 copy:
-	if (vma->mmview_shared && !mm_is_base(vma->vm_mm)) {
-		pte_unmap_unlock(vmf->pte, vmf->ptl);
-		return VM_FAULT_VIEW_RETRY;
-	}
-
 	/*
 	 * Ok, we need to copy. Oh, well..
 	 */
