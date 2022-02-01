@@ -49,13 +49,13 @@ static int madvise_need_mmap_write(int behavior)
 	switch (behavior) {
 	case MADV_REMOVE:
 	case MADV_WILLNEED:
-	case MADV_DONTNEED:
 	case MADV_COLD:
 	case MADV_PAGEOUT:
 	case MADV_FREE:
 	case MADV_POPULATE_READ:
 	case MADV_POPULATE_WRITE:
 		return 0;
+	case MADV_DONTNEED:	/* inhibit faults in sibling views */
 	default:
 		/* be safe, default to 1. list exceptions explicitly */
 		return 1;
@@ -762,6 +762,14 @@ static int madvise_free_single_vma(struct vm_area_struct *vma,
 static long madvise_dontneed_single_vma(struct vm_area_struct *vma,
 					unsigned long start, unsigned long end)
 {
+	if (mm_has_views(vma->vm_mm) && vma->mmview_shared) {
+		struct mm_struct *mm_cursor;
+		struct vm_area_struct *vma_cursor;
+		list_for_each_entry(mm_cursor, &vma->vm_mm->siblings, siblings) {
+			vma_cursor = find_vma(mm_cursor, start);
+			zap_page_range(vma_cursor, start, end - start);
+		}
+	}
 	zap_page_range(vma, start, end - start);
 	return 0;
 }
