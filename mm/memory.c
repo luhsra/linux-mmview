@@ -3147,21 +3147,35 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 
 	__SetPageUptodate(new_page);
 
-	/*
-	 * If this page is shared among mmviews, zap their page table entries
-	 * to make sure subsequent reads get the new page.  Serialize this with
-	 * mmview_sync_page using mmap write lock.
-	 */
-	if (mm_has_views(mm) && vma->mmview_shared) {
-		mmap_read_unlock(mm);
-		mmap_write_lock(mm);
-		mmview_zap_page(mm, vmf->address);
-	}
-
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
 				vmf->address & PAGE_MASK,
 				(vmf->address & PAGE_MASK) + PAGE_SIZE);
 	mmu_notifier_invalidate_range_start(&range);
+
+	/*
+	 * If this page is shared among mmviews, zap their page table entries
+	 * to make sure the subsequent reads get the new page.  Replace the PTE
+	 * in the base mm with a temporary placeholder to prevent concurrent
+	 * sibling faults from restoring the old page.
+	 */
+	if (mm_has_views(mm) && vma->mmview_shared) {
+		swp_entry_t mmview_entry = make_mmview_entry();
+
+		vmf->pte = pte_offset_map_lock(mm, vmf->pmd, vmf->address,
+					       &vmf->ptl);
+		if (!likely(pte_same(*vmf->pte, vmf->orig_pte)))
+			goto out_unlock_pte;
+
+		flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
+		entry = swp_entry_to_pte(mmview_entry);
+		ptep_clear_flush_notify(vma, vmf->address, vmf->pte);
+		set_pte_at(mm, vmf->address, vmf->pte, entry);
+		vmf->orig_pte = entry;
+
+		pte_unmap_unlock(vmf->pte, vmf->ptl);
+
+		mmview_zap_page(mm, vmf->address);
+	}
 
 	/*
 	 * Re-check the pte - we dropped the lock
@@ -3229,6 +3243,9 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 		new_page = old_page;
 		page_copied = 1;
 	} else {
+		if (mm_has_views(mm) && vma->mmview_shared)
+			BUG(); /* Somebody messed with the mmview entry */
+out_unlock_pte:
 		update_mmu_tlb(vma, vmf->address, vmf->pte);
 	}
 
@@ -3241,8 +3258,6 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	 * the above ptep_clear_flush_notify() did already call it.
 	 */
 	mmu_notifier_invalidate_range_only_end(&range);
-	if (mm_has_views(mm) && vma->mmview_shared)
-		mmap_write_downgrade(mm);
 	if (old_page) {
 		/*
 		 * Don't let another task, with possibly unlocked vma,
@@ -3890,11 +3905,24 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 			return VM_FAULT_OOM;
 
 	ret = VM_FAULT_VIEW_RETRY;
-	if (follow_pte(base_mm, vmf->address, &ptep, &ptl))
-		return ret;
+	for (;;) {
+		swp_entry_t entry;
 
-	if (pte_none(*ptep))
-		goto out_unlock_ptl;
+		ptep = get_locked_pte(base_mm, vmf->address, &ptl);
+		if (pte_none(*ptep))
+			goto out_unlock_ptl;
+		if (pte_present(*ptep))
+			break;
+
+		entry = pte_to_swp_entry(*ptep);
+		pte_unmap_unlock(ptep, ptl);
+		if (!is_mmview_entry(entry)) {
+			return ret;
+		}
+
+		/* Let the concurrent wp_page_copy finish its job. */
+		yield(); /* FIXME (mmview) See comment for yield() */
+	}
 
 	vmf->pte = pte_offset_map_lock_nested(vma->vm_mm, vmf->pmd,
 					      vmf->address, &vmf->ptl,

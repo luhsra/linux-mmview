@@ -337,6 +337,16 @@ static inline int is_pmd_migration_entry(pmd_t pmd)
 }
 #endif
 
+static inline swp_entry_t make_mmview_entry(void)
+{
+	return swp_entry(SWP_MMVIEW, 0);
+}
+
+static inline int is_mmview_entry(swp_entry_t entry)
+{
+	return swp_type(entry) == SWP_MMVIEW;
+}
+
 #ifdef CONFIG_MEMORY_FAILURE
 
 extern atomic_long_t num_poisoned_pages __read_mostly;
@@ -388,7 +398,7 @@ static inline void num_poisoned_pages_inc(void)
 #endif
 
 #if defined(CONFIG_MEMORY_FAILURE) || defined(CONFIG_MIGRATION) || \
-    defined(CONFIG_DEVICE_PRIVATE)
+    defined(CONFIG_DEVICE_PRIVATE) || 1 /* FIXME (mmview) */
 static inline int non_swap_entry(swp_entry_t entry)
 {
 	return swp_type(entry) >= MAX_SWAPFILES;

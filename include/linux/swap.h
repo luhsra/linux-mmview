@@ -56,6 +56,14 @@ static inline int current_is_kswapd(void)
  */
 
 /*
+ * Placeholder entry for shared mmview pages in process of being copied on
+ * write access.
+ */
+#define SWP_MMVIEW_NUM 1
+#define SWP_MMVIEW (MAX_SWAPFILES+SWP_HWPOISON_NUM+SWP_MIGRATION_NUM+\
+		    SWP_DEVICE_NUM)
+
+/*
  * Unaddressable device memory support. See include/linux/hmm.h and
  * Documentation/vm/hmm.rst. Short description is we need struct pages for
  * device memory that is unaddressable (inaccessible) by CPU, so that we can
@@ -99,7 +107,7 @@ static inline int current_is_kswapd(void)
 #endif
 
 #define MAX_SWAPFILES \
-	((1 << MAX_SWAPFILES_SHIFT) - SWP_DEVICE_NUM - \
+	((1 << MAX_SWAPFILES_SHIFT) - SWP_MMVIEW_NUM - SWP_DEVICE_NUM - \
 	SWP_MIGRATION_NUM - SWP_HWPOISON_NUM)
 
 /*
