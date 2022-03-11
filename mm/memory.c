@@ -3103,6 +3103,7 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	struct mm_struct *mm = vma->vm_mm;
 	struct page *old_page = vmf->page;
 	struct page *new_page = NULL;
+	struct page *locked_page = NULL;
 	pte_t entry;
 	int page_copied = 0;
 	struct mmu_notifier_range range;
@@ -3159,7 +3160,9 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	 * sibling faults from restoring the old page.
 	 */
 	if (mm_has_views(mm) && vma->mmview_shared) {
-		swp_entry_t mmview_entry = make_mmview_entry();
+		swp_entry_t mmview_entry = make_mmview_entry(new_page);
+		locked_page = new_page;
+		lock_page(locked_page);
 
 		vmf->pte = pte_offset_map_lock(mm, vmf->pmd, vmf->address,
 					       &vmf->ptl);
@@ -3249,10 +3252,13 @@ out_unlock_pte:
 		update_mmu_tlb(vma, vmf->address, vmf->pte);
 	}
 
+	pte_unmap_unlock(vmf->pte, vmf->ptl);
+
+	if (locked_page)
+		unlock_page(locked_page); /* Wake up mmviews waiting on entry */
 	if (new_page)
 		put_page(new_page);
 
-	pte_unmap_unlock(vmf->pte, vmf->ptl);
 	/*
 	 * No need to double call mmu_notifier->invalidate_range() callback as
 	 * the above ptep_clear_flush_notify() did already call it.
@@ -3638,6 +3644,36 @@ static vm_fault_t remove_device_exclusive_entry(struct vm_fault *vmf)
 }
 
 /*
+ * We have discovered a pte of a page in process of zapping. We need to
+ * get to the page and wait until copy-on-write is finished.
+ */
+void mmview_entry_wait(struct mm_struct *mm, pte_t *ptep, spinlock_t *ptl)
+{
+	pte_t pte;
+	swp_entry_t entry;
+	struct page *page;
+
+	spin_lock(ptl);
+	pte = *ptep;
+	if (!is_swap_pte(pte))
+		goto out;
+
+	entry = pte_to_swp_entry(pte);
+	if (!is_mmview_entry(entry))
+		goto out;
+
+	page = pfn_swap_entry_to_page(entry);
+	page = compound_head(page);
+
+	get_page(page);
+	pte_unmap_unlock(ptep, ptl);
+	put_and_wait_on_page_locked(page, TASK_UNINTERRUPTIBLE);
+	return;
+out:
+	pte_unmap_unlock(ptep, ptl);
+}
+
+/*
  * We enter with non-exclusive mmap_lock (to exclude vma changes,
  * but allow concurrent faults), and pte mapped but not yet locked.
  * We return with pte unmapped and unlocked.
@@ -3671,6 +3707,10 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 		} else if (is_device_private_entry(entry)) {
 			vmf->page = pfn_swap_entry_to_page(entry);
 			ret = vmf->page->pgmap->ops->migrate_to_ram(vmf);
+		} else if (is_mmview_entry(entry)) {
+			spinlock_t *ptl = pte_lockptr(vma->vm_mm, vmf->pmd);
+			pte_t *ptep = pte_offset_map(vmf->pmd, vmf->address);
+			mmview_entry_wait(vma->vm_mm, ptep, ptl);
 		} else if (is_hwpoison_entry(entry)) {
 			ret = VM_FAULT_HWPOISON;
 		} else {
@@ -3915,13 +3955,14 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 			break;
 
 		entry = pte_to_swp_entry(*ptep);
-		pte_unmap_unlock(ptep, ptl);
-		if (!is_mmview_entry(entry)) {
-			return ret;
-		}
+		if (!is_mmview_entry(entry))
+			goto out_unlock_ptl; /* Let base fault deal with it */
 
 		/* Let the concurrent wp_page_copy finish its job. */
-		yield(); /* FIXME (mmview) See comment for yield() */
+		page = pfn_swap_entry_to_page(entry);
+		get_page(page);
+		pte_unmap_unlock(ptep, ptl);
+		put_and_wait_on_page_locked(page, TASK_UNINTERRUPTIBLE);
 	}
 
 	vmf->pte = pte_offset_map_lock_nested(vma->vm_mm, vmf->pmd,

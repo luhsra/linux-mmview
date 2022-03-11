@@ -247,15 +247,26 @@ static inline int is_writable_migration_entry(swp_entry_t entry)
 
 #endif
 
+static inline swp_entry_t make_mmview_entry(struct page *new_page)
+{
+	return swp_entry(SWP_MMVIEW, page_to_pfn(new_page));
+}
+
+static inline int is_mmview_entry(swp_entry_t entry)
+{
+	return swp_type(entry) == SWP_MMVIEW;
+}
+
 static inline struct page *pfn_swap_entry_to_page(swp_entry_t entry)
 {
 	struct page *p = pfn_to_page(swp_offset(entry));
 
 	/*
-	 * Any use of migration entries may only occur while the
+	 * Any use of migration/mmview entries may only occur while the
 	 * corresponding page is locked
 	 */
 	BUG_ON(is_migration_entry(entry) && !PageLocked(p));
+	BUG_ON(is_mmview_entry(entry) && !PageLocked(p));
 
 	return p;
 }
@@ -336,16 +347,6 @@ static inline int is_pmd_migration_entry(pmd_t pmd)
 	return 0;
 }
 #endif
-
-static inline swp_entry_t make_mmview_entry(void)
-{
-	return swp_entry(SWP_MMVIEW, 0);
-}
-
-static inline int is_mmview_entry(swp_entry_t entry)
-{
-	return swp_type(entry) == SWP_MMVIEW;
-}
 
 #ifdef CONFIG_MEMORY_FAILURE
 
