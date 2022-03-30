@@ -5788,7 +5788,6 @@ bool hugetlb_reserve_pages(struct inode *inode,
 	struct resv_map *resv_map;
 	struct hugetlb_cgroup *h_cg = NULL;
 	long gbl_reserve, regions_needed = 0;
-	struct mm_struct *mm = vma->vm_mm;
 
 	/* This should never happen */
 	if (from > to) {
@@ -5801,7 +5800,11 @@ bool hugetlb_reserve_pages(struct inode *inode,
 	 * attempt will be made for VM_NORESERVE to allocate a page
 	 * without using reserves
 	 */
-	if (vm_flags & VM_NORESERVE || (!mm_is_base(mm) && vma->mmview_shared))
+	if (vm_flags & VM_NORESERVE)
+		return true;
+
+	/* Perform hugepage reservation in shared vmas only for base mmviews */
+	if (vma && vma->mmview_shared && !mm_is_base(vma->vm_mm))
 		return true;
 
 	/*
