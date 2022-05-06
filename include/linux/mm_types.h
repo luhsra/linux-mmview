@@ -422,8 +422,19 @@ struct mm_common {
 
 	/* FIXME (mmview) there are still many occasions where
 	   mm->mm_users is queried, instead of mm->common->users */
-	atomic_t users;		/* total mm_users across all mms */
-	atomic_t count;		/* alive mms using this mm_common */
+
+	/**
+	 * @users: Total mm_users across all mms (minus 1 for each view)
+	 *
+	 * This equals the sum of all mm_struct.mm_users of all mmviews,
+	 * minus 1 for each view (which counts for the MMVIEW_AVAILABLE status).
+	 */
+	atomic_t users;
+
+	/**
+	 * @count: Alive mms using this mm_common
+	 */
+	atomic_t count;
 };
 
 struct kioctx_table;

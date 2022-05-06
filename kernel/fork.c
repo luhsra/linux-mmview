@@ -1083,6 +1083,8 @@ static void mm_common_connect(struct mm_common *common, struct mm_struct *mm)
 
 	if (mm != common->base)
 		list_add_tail(&mm->siblings, &common->base->siblings);
+
+	atomic_inc(&mm->mm_users);
 }
 
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
@@ -1200,10 +1202,13 @@ static inline void __mmput(struct mm_struct *mm)
 static inline void mmput_all(struct mm_common *common) {
 	struct mm_struct *base = common->base;
 	struct mm_struct *sibling, *next;
+
 	list_for_each_entry_safe(sibling, next, &base->siblings, siblings) {
+		BUG_ON(!atomic_dec_and_test(&sibling->mm_users));
 		list_del(&sibling->siblings);
 		__mmput(sibling);
 	}
+	BUG_ON(!atomic_dec_and_test(&base->mm_users));
 	list_del(&base->siblings);
 	__mmput(base);
 }
@@ -1224,8 +1229,7 @@ void mmput(struct mm_struct *mm)
 	 * Also we cannot safely put it down because it may still be used
 	 * by sibling mms.
 	 */
-	if (atomic_dec_and_test(&mm->mm_users) && !mm_is_base(mm) &&
-	    !test_bit(MMVIEW_AVAILABLE, &mm->view_flags)) {
+	if (atomic_dec_and_test(&mm->mm_users)) {
 		mmap_write_lock(mm);
 		list_del(&mm->siblings);
 		mmap_write_unlock(mm);
@@ -1238,14 +1242,6 @@ void mmput(struct mm_struct *mm)
 EXPORT_SYMBOL_GPL(mmput);
 
 #ifdef CONFIG_MMU
-static void mmput_all_async_fn(struct work_struct *work)
-{
-	struct mm_struct *mm = container_of(work, struct mm_struct,
-					    async_put_work);
-
-	mmput_all(mm->common);
-}
-
 static void mmput_view_async_fn(struct work_struct *work)
 {
 	struct mm_struct *mm = container_of(work, struct mm_struct,
@@ -1261,20 +1257,22 @@ static void mmput_view_async_fn(struct work_struct *work)
 		mmput_all(common);
 }
 
+static void mmput_common_async_fn(struct work_struct *work)
+{
+	struct mm_struct *mm = container_of(work, struct mm_struct,
+					    async_put_work);
+	mmput_all(mm->common);
+}
+
 void mmput_async(struct mm_struct *mm)
 {
-	struct mm_common *common = mm->common;
-	struct mm_struct *base = mm->common->base;
-
-	/* see mmput */
-	if (atomic_dec_and_test(&mm->mm_users) && mm != base &&
-	    !test_bit(MMVIEW_AVAILABLE, &mm->view_flags)) {
+	if (atomic_dec_and_test(&mm->mm_users)) {
 		INIT_WORK(&mm->async_put_work, mmput_view_async_fn);
 		schedule_work(&mm->async_put_work);
-	} else if (atomic_dec_and_test(&common->users)) {
-		INIT_WORK(&base->async_put_work, mmput_all_async_fn);
-		schedule_work(&base->async_put_work);
-	}
+	} else if (atomic_dec_and_test(&mm->common->users)) {
+		INIT_WORK(&mm->async_put_work, mmput_common_async_fn);
+		schedule_work(&mm->async_put_work);
+ 	}
 }
 #endif
 

@@ -190,11 +190,10 @@ SYSCALL_DEFINE1(mmview_delete, long, id)
 	    !test_bit(MMVIEW_AVAILABLE, &requested_mm->view_flags))
 		goto fail;
 
-	mmget(requested_mm);
 	clear_bit(MMVIEW_AVAILABLE, &requested_mm->view_flags);
 	mmap_write_unlock(current_mm);
 
-	if (atomic_read(&requested_mm->mm_users) > 0) {
+	if (atomic_read(&requested_mm->mm_users) > 1) {
 		/* The view will no longer be accessible from the system calls,
 		 * but it will be kept in the list, until the last task stops
 		 * using it and calls mmput */
