@@ -213,7 +213,7 @@ static void stack_map_get_build_id_offset(struct bpf_stack_build_id *id_offs,
 		 * context. Tell lockdep that we've released it now so
 		 * it doesn't complain that we forgot to release it.
 		 */
-		rwsem_release(&current->mm->mmap_lock.dep_map, _RET_IP_);
+		rwsem_release(&current->mm->common->mmap_lock.dep_map, _RET_IP_);
 		irq_work_queue(&work->irq_work);
 	}
 }
