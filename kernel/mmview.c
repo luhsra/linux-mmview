@@ -389,7 +389,7 @@ SYSCALL_DEFINE1(mmview_delete, long, id)
 			     atomic_read(&requested_mm->mm_users));
 	}
 
-	mmput(requested_mm);
+	mmput_view(requested_mm);
 
 	mmview_debug("deleted mm %lu\n", id);
 

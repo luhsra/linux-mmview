@@ -1213,6 +1213,16 @@ static inline void mmput_all(struct mm_common *common) {
 	__mmput(base);
 }
 
+void mmput_view(struct mm_struct *mm)
+{
+	if (atomic_dec_and_test(&mm->mm_users)) {
+		mmap_write_lock(mm);
+		list_del(&mm->siblings);
+		mmap_write_unlock(mm);
+		__mmput(mm);
+	}
+}
+
 /*
  * Decrement the use count and release all resources for an mm.
  */
@@ -1222,19 +1232,7 @@ void mmput(struct mm_struct *mm)
 
 	might_sleep();
 
-	/*
-	 * Let mm_users get 0 but do not tear down the mm (and do not drop it)
-	 * if it is exposed to the userspace and mm->common still has users.
-	 * We may resurrect it later, when it is used again by some task.
-	 * Also we cannot safely put it down because it may still be used
-	 * by sibling mms.
-	 */
-	if (atomic_dec_and_test(&mm->mm_users)) {
-		mmap_write_lock(mm);
-		list_del(&mm->siblings);
-		mmap_write_unlock(mm);
-		__mmput(mm);
-	}
+	mmput_view(mm);
 
 	if (atomic_dec_and_test(&common->users))
 		mmput_all(common);
