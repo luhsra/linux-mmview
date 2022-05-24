@@ -359,6 +359,7 @@ SYSCALL_DEFINE1(mmview_delete, long, id)
 {
 	struct mm_struct *current_mm = current->mm;
 	struct mm_struct *requested_mm;
+	int users;
 
 	if (id < 0)
 		return migrate_base_mm();
@@ -381,12 +382,12 @@ SYSCALL_DEFINE1(mmview_delete, long, id)
 	clear_bit(MMVIEW_AVAILABLE, &requested_mm->view_flags);
 	mmap_write_unlock(current_mm);
 
-	if (atomic_read(&requested_mm->mm_users) > 1) {
+	users = atomic_read(&requested_mm->mm_users) - 1;
+	if (users > 0) {
 		/* The view will no longer be accessible from the system calls,
 		 * but it will be kept in the list, until the last task stops
 		 * using it and calls mmput */
-		mmview_debug("mm %lu still had %d users\n", id,
-			     atomic_read(&requested_mm->mm_users));
+		mmview_debug("mm %lu still had %d users\n", id, users);
 	}
 
 	mmput_view(requested_mm);

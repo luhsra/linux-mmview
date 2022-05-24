@@ -1075,8 +1075,9 @@ static struct mm_common *mm_common_new(struct mm_struct *base)
  */
 static void mm_common_connect(struct mm_common *common, struct mm_struct *mm)
 {
-	atomic_inc(&common->users);
 	atomic_inc(&common->count);
+	atomic_inc(&common->users); /* This is a part of mm_struct init code,
+				     * assume it has exactly one user. */
 
 	mm->common = common;
 	mm->view_id = common->next_view_id++;
@@ -1085,6 +1086,7 @@ static void mm_common_connect(struct mm_common *common, struct mm_struct *mm)
 		list_add_tail(&mm->siblings, &common->base->siblings);
 
 	atomic_inc(&mm->mm_users);
+	set_bit(MMVIEW_AVAILABLE, &mm->view_flags);
 }
 
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
@@ -1169,7 +1171,6 @@ struct mm_struct *mm_alloc(void)
 
 	mm_common_connect(common, mm);
 
-	set_bit(MMVIEW_AVAILABLE, &mm->view_flags);
 	return mm;
 
 fail_nomem:
@@ -1213,6 +1214,9 @@ static inline void mmput_all(struct mm_common *common) {
 	__mmput(base);
 }
 
+/* Drops an mm user without adjusting common->users.  Typically needs to be
+ * followed by dec_and_test of common users, unless we are removing the
+ * MMVIEW_AVAILABLE status, which is not counted in common. */
 void mmput_view(struct mm_struct *mm)
 {
 	if (atomic_dec_and_test(&mm->mm_users)) {
@@ -1584,7 +1588,6 @@ struct mm_struct *dup_mm(struct task_struct *tsk, struct mm_struct *oldmm,
 	if (mm->binfmt && !try_module_get(mm->binfmt->module))
 		goto free_pt;
 
-	set_bit(MMVIEW_AVAILABLE, &mm->view_flags);
 	return mm;
 
 free_pt:

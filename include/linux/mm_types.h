@@ -424,10 +424,11 @@ struct mm_common {
 	   mm->mm_users is queried, instead of mm->common->users */
 
 	/**
-	 * @users: Total mm_users across all mms (minus 1 for each view)
+	 * @users: Total users across all mmviews.
 	 *
-	 * This equals the sum of all mm_struct.mm_users of all mmviews,
-	 * minus 1 for each view (which counts for the MMVIEW_AVAILABLE status).
+	 * Equals to the sum of _real_ users of all mmviews.  This does not
+	 * include count induced by MMVIEW_AVAILABLE status, represented by an
+	 * additional mm_user in mm_struct.
 	 */
 	atomic_t users;
 
