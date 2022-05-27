@@ -1135,11 +1135,11 @@ void do_page_add_anon_rmap(struct page *page,
 		VM_BUG_ON_PAGE(!PageTransHuge(page), page);
 		mapcount = compound_mapcount_ptr(page);
 		first = atomic_inc_and_test(mapcount);
-		if (!mm_is_base(vma->vm_mm))
+		if (rmap_viewcount(vma))
 			atomic_inc(compound_viewcount_ptr(page));
 	} else {
 		first = atomic_inc_and_test(&page->_mapcount);
-		if (!mm_is_base(vma->vm_mm))
+		if (rmap_viewcount(vma))
 			atomic_inc(&page->_viewcount);
 	}
 
@@ -1193,8 +1193,7 @@ void page_add_new_anon_rmap(struct page *page,
 		VM_BUG_ON_PAGE(!PageTransHuge(page), page);
 		/* increment count (starts at -1) */
 		atomic_set(compound_mapcount_ptr(page), 0);
-		atomic_set(compound_viewcount_ptr(page),
-			   mm_is_base(vma->vm_mm) ? 0 : 1);
+		atomic_set(compound_viewcount_ptr(page), rmap_viewcount(vma));
 		if (hpage_pincount_available(page))
 			atomic_set(compound_pincount_ptr(page), 0);
 
@@ -1204,7 +1203,7 @@ void page_add_new_anon_rmap(struct page *page,
 		VM_BUG_ON_PAGE(PageTransCompound(page), page);
 		/* increment count (starts at -1) */
 		atomic_set(&page->_mapcount, 0);
-		atomic_set(&page->_viewcount, mm_is_base(vma->vm_mm) ? 0 : 1);
+		atomic_set(&page->_viewcount, rmap_viewcount(vma));
 	}
 	__mod_lruvec_page_state(page, NR_ANON_MAPPED, nr);
 	__page_set_anon_rmap(page, vma, address, 1);
@@ -1301,11 +1300,11 @@ static void page_remove_file_rmap(struct page *page, bool compound)
 		clear_page_mlock(page);
 }
 
-static void page_remove_anon_compound_rmap(struct page *page, bool is_mmview)
+static void page_remove_anon_compound_rmap(struct page *page, bool viewcount)
 {
 	int i, nr;
 
-	if (is_mmview)
+	if (viewcount)
 		atomic_dec(compound_viewcount_ptr(page));
 
 	if (!atomic_add_negative(-1, compound_mapcount_ptr(page)))
@@ -1355,8 +1354,9 @@ static void page_remove_anon_compound_rmap(struct page *page, bool is_mmview)
  *
  * The caller needs to hold the pte lock.
  */
-void page_remove_rmap(struct page *page, bool compound, bool is_mmview)
+void page_remove_rmap(struct vm_area_struct *vma, struct page *page, bool compound)
 {
+	bool viewcount = rmap_viewcount(vma);
 	lock_page_memcg(page);
 
 	if (!PageAnon(page)) {
@@ -1365,11 +1365,11 @@ void page_remove_rmap(struct page *page, bool compound, bool is_mmview)
 	}
 
 	if (compound) {
-		page_remove_anon_compound_rmap(page, is_mmview);
+		page_remove_anon_compound_rmap(page, viewcount);
 		goto out;
 	}
 
-	if (is_mmview)
+	if (viewcount)
 		atomic_dec(&page->_viewcount);
 
 	/* page still mapped by someone else? */
@@ -1659,7 +1659,7 @@ discard:
 		 *
 		 * See Documentation/vm/mmu_notifier.rst
 		 */
-		page_remove_rmap(subpage, PageHuge(page), !mm_is_base(vma->vm_mm));
+		page_remove_rmap(vma, subpage, PageHuge(page));
 		put_page(page);
 	}
 
@@ -1929,7 +1929,7 @@ static bool try_to_migrate_one(struct page *page, struct vm_area_struct *vma,
 		 *
 		 * See Documentation/vm/mmu_notifier.rst
 		 */
-		page_remove_rmap(subpage, PageHuge(page), !mm_is_base(mm));
+		page_remove_rmap(vma, page, PageHuge(page));
 		put_page(page);
 	}
 

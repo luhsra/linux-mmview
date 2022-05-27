@@ -240,7 +240,7 @@ static bool remove_migration_pte(struct page *page, struct vm_area_struct *vma,
 			if (PageAnon(new))
 				hugepage_add_anon_rmap(new, vma, pvmw.address);
 			else
-				page_dup_rmap(new, true, !mm_is_base(vma->vm_mm));
+				page_dup_rmap(vma, new, true);
 		} else
 #endif
 		{

@@ -173,17 +173,23 @@ void do_page_add_anon_rmap(struct page *, struct vm_area_struct *,
 void page_add_new_anon_rmap(struct page *, struct vm_area_struct *,
 		unsigned long, bool);
 void page_add_file_rmap(struct page *, bool);
-void page_remove_rmap(struct page *, bool, bool);
+void page_remove_rmap(struct vm_area_struct *, struct page *, bool);
 
 void hugepage_add_anon_rmap(struct page *, struct vm_area_struct *,
 			    unsigned long);
 void hugepage_add_new_anon_rmap(struct page *, struct vm_area_struct *,
 				unsigned long);
 
-static inline void page_dup_rmap(struct page *page, bool compound, bool is_mmview)
+static inline int rmap_viewcount(struct vm_area_struct *vma)
+{
+	return vma->mmview_shared && !mm_is_base(vma->vm_mm);
+}
+
+static inline void page_dup_rmap(struct vm_area_struct *vma, struct page *page,
+				 bool compound)
 {
 	atomic_inc(compound ? compound_mapcount_ptr(page) : &page->_mapcount);
-	if (PageAnon(page) && is_mmview)
+	if (PageAnon(page) && rmap_viewcount(vma))
 		atomic_inc(compound ? compound_viewcount_ptr(page)
 				    : &page->_viewcount);
 }

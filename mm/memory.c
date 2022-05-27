@@ -828,7 +828,7 @@ copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 		 */
 		get_page(page);
 		rss[mm_counter(page)]++;
-		page_dup_rmap(page, false, is_mmview);
+		page_dup_rmap(dst_vma, page, false);
 
 		/*
 		 * We do not preserve soft-dirty information, because so
@@ -963,7 +963,7 @@ copy_present_pte(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
 			return retval;
 
 		get_page(page);
-		page_dup_rmap(page, false, is_mmview);
+		page_dup_rmap(dst_vma, page, false);
 		rss[mm_counter(page)]++;
 	}
 
@@ -1448,7 +1448,7 @@ again:
 					mark_page_accessed(page);
 			}
 			rss[mm_counter(page)]--;
-			page_remove_rmap(page, false, !mm_is_base(mm));
+			page_remove_rmap(vma, page, false);
 			if (unlikely(page_mapcount(page) < 0))
 				print_bad_pte(vma, addr, ptent, page);
 			if (unlikely(__tlb_remove_page(tlb, page))) {
@@ -1479,7 +1479,7 @@ again:
 			rss[mm_counter(page)]--;
 
 			if (is_device_private_entry(entry))
-				page_remove_rmap(page, false, !mm_is_base(mm));
+				page_remove_rmap(vma, page, false);
 
 			put_page(page);
 			continue;
@@ -3239,7 +3239,7 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 			 * mapcount is visible. So transitively, TLBs to
 			 * old page will be flushed before it can be reused.
 			 */
-			page_remove_rmap(old_page, false, !mm_is_base(mm));
+			page_remove_rmap(vma, old_page, false);
 		}
 
 		/* Free the old page.. */
@@ -3975,7 +3975,7 @@ static vm_fault_t mmview_sync_page(struct vm_fault *vmf)
 	page = vm_normal_page(base_vma, vmf->address, *ptep);
 	if (page) {
 		get_page(page);
-		page_dup_rmap(page, false, true);
+		page_dup_rmap(vma, page, false);
 		inc_mm_counter_fast(vma->vm_mm, mm_counter(page));
 	}
 

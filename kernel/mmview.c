@@ -200,7 +200,7 @@ migrate_pte_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma
 			page = vm_normal_page(src_vma, addr, *src_pte);
 			if (page) {
 				get_page(page);
-				page_dup_rmap(page, false, true);
+				page_dup_rmap(dst_vma, page, false);
 				add_mm_counter(dst_vma->vm_mm, mm_counter(page), 1);
 				// FIXME: see add_mm_counter_fast
 			}

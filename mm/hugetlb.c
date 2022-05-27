@@ -4413,7 +4413,7 @@ again:
 				entry = huge_pte_wrprotect(entry);
 			}
 
-			page_dup_rmap(ptepage, true, mmview);
+			page_dup_rmap(vma, ptepage, true);
 			set_huge_pte_at(dst, addr, dst_pte, entry);
 			hugetlb_count_add(npages, dst);
 		}
@@ -4518,7 +4518,7 @@ void __unmap_hugepage_range(struct mmu_gather *tlb, struct vm_area_struct *vma,
 			set_page_dirty(page);
 
 		hugetlb_count_sub(pages_per_huge_page(h), mm);
-		page_remove_rmap(page, true, !mm_is_base(mm));
+		page_remove_rmap(vma, page, true);
 
 		spin_unlock(ptl);
 		tlb_remove_page_size(tlb, page, huge_page_size(h));
@@ -4765,7 +4765,7 @@ retry_avoidcopy:
 		mmu_notifier_invalidate_range(mm, range.start, range.end);
 		set_huge_pte_at(mm, haddr, ptep,
 				make_huge_pte(vma, new_page, 1));
-		page_remove_rmap(old_page, true, !mm_is_base(mm));
+		page_remove_rmap(vma, old_page, true);
 		hugepage_add_new_anon_rmap(new_page, vma, haddr);
 		SetHPageMigratable(new_page);
 		/* Make the old page be freed below */
@@ -5015,7 +5015,7 @@ retry:
 		ClearHPageRestoreReserve(page);
 		hugepage_add_new_anon_rmap(page, vma, haddr);
 	} else
-		page_dup_rmap(page, true, !mm_is_base(mm));
+		page_dup_rmap(vma, page, true);
 	new_pte = make_huge_pte(vma, page, ((vma->vm_flags & VM_WRITE)
 				&& (vma->vm_flags & VM_SHARED)));
 	set_huge_pte_at(mm, haddr, ptep, new_pte);
@@ -5128,7 +5128,7 @@ static vm_fault_t mmview_sync_hugetlb_page(struct vm_area_struct *vma,
 
 	page = pte_page(entry);
 	get_page(page);
-	page_dup_rmap(page, true, true);
+	page_dup_rmap(vma, page, true);
 
 	set_huge_pte_at(mm, address, ptep, entry);
 	hugetlb_count_add(pages_per_huge_page(h), mm);
