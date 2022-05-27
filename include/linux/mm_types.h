@@ -627,7 +627,7 @@ static inline bool mm_has_views(struct mm_struct *mm)
 
 static inline bool mm_is_base(struct mm_struct *mm)
 {
-	return mm == mm->common->base;
+	return mm->common->base == mm;
 }
 
 /* Pointer magic because the dynamic array size confuses some compilers. */
