@@ -95,6 +95,15 @@ void __init tboot_probe(void)
 		tboot = NULL;
 }
 
+static struct mm_struct tboot_mm;
+static struct mm_common tboot_mm_common = {
+	MMAP_LOCK_INITIALIZER(tboot_mm_common)
+	.base = &tboot_mm,
+	.next_view_id = 1,
+	.users = ATOMIC_INIT(1),
+	.count = ATOMIC_INIT(1)
+};
+
 static pgd_t *tboot_pg_dir;
 static struct mm_struct tboot_mm = {
 	.mm_rb          = RB_ROOT,
@@ -102,7 +111,7 @@ static struct mm_struct tboot_mm = {
 	.mm_users       = ATOMIC_INIT(2),
 	.mm_count       = ATOMIC_INIT(1),
 	.write_protect_seq = SEQCNT_ZERO(tboot_mm.write_protect_seq),
-	MMAP_LOCK_INITIALIZER(init_mm)
+	.common         = &tboot_mm_common,
 	.page_table_lock =  __SPIN_LOCK_UNLOCKED(init_mm.page_table_lock),
 	.mmlist         = LIST_HEAD_INIT(init_mm.mmlist),
 };
