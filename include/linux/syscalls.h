@@ -1267,7 +1267,8 @@ asmlinkage long sys_old_mmap(struct mmap_arg_struct __user *arg);
 
 asmlinkage long sys_mmview_create(void);
 asmlinkage long sys_mmview_migrate(long id);
-asmlinkage long sys_mmview_unshare(unsigned long addr, unsigned long len);
+asmlinkage long sys_mmview_set_shared(unsigned long addr, unsigned long len,
+				      bool shared);
 asmlinkage long sys_mmview_delete(long id);
 
 /*

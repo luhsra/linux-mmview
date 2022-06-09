@@ -887,8 +887,8 @@ __SYSCALL(__NR_mmview_create, sys_mmview_create)
 #define __NR_mmview_migrate 1001
 __SYSCALL(__NR_mmview_migrate, sys_mmview_migrate)
 
-#define __NR_mmview_unshare 1002
-__SYSCALL(__NR_mmview_unshare, sys_mmview_unshare)
+#define __NR_mmview_set_shared 1002
+__SYSCALL(__NR_mmview_set_shared, sys_mmview_set_shared)
 
 #define __NR_mmview_delete 1003
 __SYSCALL(__NR_mmview_delete, sys_mmview_delete)

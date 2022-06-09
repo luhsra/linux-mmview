@@ -287,7 +287,8 @@ SYSCALL_DEFINE1(mmview_migrate, long, id)
 	return old_id;
 }
 
-SYSCALL_DEFINE2(mmview_unshare, unsigned long, addr, unsigned long, len)
+SYSCALL_DEFINE3(mmview_set_shared, unsigned long, addr, unsigned long, len,
+		bool, shared)
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma, *prev, *last, *tmp;
@@ -357,7 +358,7 @@ SYSCALL_DEFINE2(mmview_unshare, unsigned long, addr, unsigned long, len)
 	/* Make some checks */
 	tmp = vma;
 	while (tmp && tmp->vm_start < end) {
-		if ((tmp->vm_flags & VM_SHARED) && !tmp->mmview_shared) {
+		if (!shared && (tmp->vm_flags & VM_SHARED)) {
 			ret = -EACCES;
 			goto out;
 		}
@@ -367,11 +368,12 @@ SYSCALL_DEFINE2(mmview_unshare, unsigned long, addr, unsigned long, len)
 	/* Finally set mmview_shared flag */
 	tmp = vma;
 	while (tmp && tmp->vm_start < end) {
-		tmp->mmview_shared = false;
+		tmp->mmview_shared = shared;
 		tmp = tmp->vm_next;
 	}
 
-	mmview_debug("unshared [%lx-%lx]\n", addr, addr+len);
+	mmview_debug("%s [%lx-%lx]\n", shared ? "shared" : "unshared",
+		     addr, addr+len);
 out:
 	mmap_write_unlock(mm);
 	return ret;

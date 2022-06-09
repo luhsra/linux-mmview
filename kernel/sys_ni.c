@@ -480,5 +480,5 @@ COND_SYSCALL(rseq);
 /* mmview */
 COND_SYSCALL(mmview_create);
 COND_SYSCALL(mmview_migrate);
-COND_SYSCALL(mmview_unshare);
+COND_SYSCALL(mmview_set_shared);
 COND_SYSCALL(mmview_delete);

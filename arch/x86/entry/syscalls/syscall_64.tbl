@@ -418,5 +418,5 @@
 
 1000	common	mmview_create		sys_mmview_create
 1001	common	mmview_migrate		sys_mmview_migrate
-1002	common	mmview_unshare		sys_mmview_unshare
+1002	common	mmview_set_shared	sys_mmview_set_shared
 1003	common	mmview_delete		sys_mmview_delete
