@@ -8,20 +8,7 @@ them to diverge between views or threads.
 
 ** Usage
 
-- ~long mmview_unshare(void *addr, size_t len)~
-
-  Designates memory pages containing any part of the address range in the
-  interval =[addr, addr+len-1]= as unshared.  Must be called before any
-  additional views are created.  ~addr~ must be aligned to a page boundary.
-
-  Returns 0 on success.  On failure, -1 is returned and errno is set
-  appropriately:
-
-  | ~EPERM~  | Calling process already has additional views.        |
-  | ~EINVAL~ | An invalid address range has been specified.         |
-  | ~EACCES~ | Memory contained in the interval cannot be unshared. |
-
-- ~long mmview_create(void)~
+- ~long mmview(MMVIEW_CREATE)~
 
   Creates an additional address space view.
 
@@ -30,17 +17,7 @@ them to diverge between views or threads.
 
   | ~ENOMEM~ | Out of memory. |
 
-- ~long mmview_migrate(long id)~
-
-  Migrates current thread to the address space view referenced by ~id~.
-
-  Returns id of the previous address space view on success or id of the current
-  view in case an invalid id (<0) is passed.  On failure, -1 is returned and
-  errno is set appropriately:
-
-  | ~EINVAL~ | Address space view referenced by ~id~ does not exist. |
-
-- ~long mmview_delete(long id)~
+- ~long mmview(MMVIEW_DELETE, long id)~
 
   Marks the address space view referenced by ~id~ for deletion.  Its resources
   will be freed after the last thread stops using it.
@@ -48,11 +25,71 @@ them to diverge between views or threads.
   Returns 0 on success.  On failure, -1 is returned and errno is set
   appropriately:
 
+  | ~EPERM~  | Address space view referenced by ~id~ is the base view. |
+  | ~EINVAL~ | Address space view referenced by ~id~ does not exist.   |
+
+- ~long mmview(MMVIEW_CURRENT)~
+
+  Returns id of the current address space.  No errors.
+
+- ~long mmview(MMVIEW_MIGRATE, long id)~
+
+  Migrates current thread to the address space view referenced by ~id~.
+
+  Returns id of the previous address space view on success.  On failure, -1 is
+  returned and errno is set appropriately:
+
   | ~EINVAL~ | Address space view referenced by ~id~ does not exist. |
 
-System call wrappers along with the test suite can be found in the [[https://scm.sra.uni-hannover.de/source/mmview-tests][Phabricator]].
+- ~long mmview(MMVIEW_UNSHARE, void *addr, size_t len)~
+  
+  ~long mmview(MMVIEW_SHARE, void *addr, size_t len)~
+
+  Designates memory pages containing any part of the address range in the
+  interval =[addr, addr+len-1]= as shared or unshared.  Must only be called with
+  single view present.  ~addr~ must be aligned to a page boundary.
+
+  Returns 0 on success.  On failure, -1 is returned and errno is set
+  appropriately:
+
+  | ~EPERM~  | Calling process has additional views.                |
+  | ~EINVAL~ | An invalid address range has been specified.         |
+  | ~EACCES~ | Memory contained in the interval cannot be unshared. |
+
+- ~long mmview(MMVIEW_SWITCH_BASE)~
+
+  Appoints the current view to be the new base view of the process.  This can be
+  used to optimize memory accesses, or to free the memory belonging to the
+  previous base view by allowing its deletion.
+
+  Returns id of the current view on success.  On failure, -1 is returned and
+  errno is set appropriately:
+
+  | ~ENOMEM~ | Out of memory. |
+
+System call wrappers along with the test suite can be found in the [[https://scm.sra.uni-hannover.de/source/mmview-tests][mmview-tests]]
+repository.
 
 ** News
+
+*** BREAKING: Redesigned the system call interface
+
+Due to the system call interface getting out of control after introduction of
+new features, the mmview functionality is now re-exported under a single system
+call with the first parameter specifying the requested procedure.
+
+*** Added possibility to designate areas as shared
+
+After =fork()= or deletion of other mmviews, it might be desired to redesignate
+some areas as shared again.  This is now possible.
+
+*** Enabled migration of the base mmview
+
+The base mmview is the initial address space, used as the master copy for shared
+areas in other views.  Changing the base view is transparent to the application,
+but enables some techniques, which were not possible before (e.g., deletion of
+the original address space).  Another side effect is the reduced overhead of
+page faults in the base mmview.
 
 *** Updated kernel to 5.15
 
