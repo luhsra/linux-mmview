@@ -160,7 +160,7 @@ out:
 	return ret;
 }
 
-static int migrate_base_mm(void)
+static long mmview_switch_base(void)
 {
 	struct vm_area_struct *src_vma;
 	struct mm_struct *src_mm, *dst_mm = current->mm;
@@ -215,7 +215,7 @@ out_unlock:
 	return ret;
 }
 
-SYSCALL_DEFINE0(mmview_create)
+static long mmview_create(void)
 {
 	struct mm_struct *new_mm;
 	long id;
@@ -237,16 +237,12 @@ fail_nomem:
 	return -ENOMEM;
 }
 
-SYSCALL_DEFINE1(mmview_migrate, long, id)
+static long mmview_migrate(long id)
 {
 	struct mm_struct *old_mm = current->mm;
 	struct mm_struct *new_mm;
 	unsigned long old_id;
 	unsigned long flags;
-
-	/* Passing an invalid id (< 0) returns the current view id */
-	if (id < 0)
-		return old_mm->view_id;
 
 	/* Find view with id */
 	mmap_read_lock(old_mm);
@@ -287,8 +283,7 @@ SYSCALL_DEFINE1(mmview_migrate, long, id)
 	return old_id;
 }
 
-SYSCALL_DEFINE3(mmview_set_shared, unsigned long, addr, unsigned long, len,
-		bool, shared)
+static long mmview_set_shared(unsigned long addr, unsigned long len, bool shared)
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma, *prev, *last, *tmp;
@@ -379,14 +374,12 @@ out:
 	return ret;
 }
 
-SYSCALL_DEFINE1(mmview_delete, long, id)
+static long mmview_delete(long id)
 {
 	struct mm_struct *current_mm = current->mm;
 	struct mm_struct *requested_mm;
+	long ret;
 	int users;
-
-	if (id < 0)
-		return migrate_base_mm();
 
 	/* Write lock, in order to avoid concurrent migrations */
 	mmap_write_lock(current_mm);
@@ -396,10 +389,12 @@ SYSCALL_DEFINE1(mmview_delete, long, id)
 			break;
 	}
 
+	ret = -EINVAL;
 	if (!requested_mm || requested_mm->view_id != id ||
 	    !test_bit(MMVIEW_AVAILABLE, &requested_mm->view_flags))
 		goto fail;
 
+	ret = -EPERM;
 	if (mm_is_base(requested_mm))
 		goto fail;
 
@@ -422,5 +417,27 @@ SYSCALL_DEFINE1(mmview_delete, long, id)
 
 fail:
 	mmap_write_unlock(current_mm);
+	return ret;
+}
+
+SYSCALL_DEFINE3(mmview, int, op, unsigned long, arg1, unsigned long, arg2)
+{
+	switch (op) {
+	case MMVIEW_CREATE:
+		return mmview_create();
+	case MMVIEW_DELETE:
+		return mmview_delete(arg1);
+	case MMVIEW_CURRENT:
+		return current->mm->view_id;
+	case MMVIEW_MIGRATE:
+		return mmview_migrate(arg1);
+	case MMVIEW_UNSHARE:
+		return mmview_set_shared(arg1, arg2, false);
+	case MMVIEW_SHARE:
+		return mmview_set_shared(arg1, arg2, true);
+	case MMVIEW_SWITCH_BASE:
+		return mmview_switch_base();
+	}
+
 	return -EINVAL;
 }

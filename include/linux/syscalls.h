@@ -1265,11 +1265,7 @@ asmlinkage long sys_mmap_pgoff(unsigned long addr, unsigned long len,
 			unsigned long fd, unsigned long pgoff);
 asmlinkage long sys_old_mmap(struct mmap_arg_struct __user *arg);
 
-asmlinkage long sys_mmview_create(void);
-asmlinkage long sys_mmview_migrate(long id);
-asmlinkage long sys_mmview_set_shared(unsigned long addr, unsigned long len,
-				      bool shared);
-asmlinkage long sys_mmview_delete(long id);
+asmlinkage long sys_mmview(int op, unsigned long arg1, unsigned long arg2);
 
 /*
  * Not a real system call, but a placeholder for syscalls which are

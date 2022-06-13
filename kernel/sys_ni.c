@@ -478,7 +478,4 @@ COND_SYSCALL(setuid16);
 COND_SYSCALL(rseq);
 
 /* mmview */
-COND_SYSCALL(mmview_create);
-COND_SYSCALL(mmview_migrate);
-COND_SYSCALL(mmview_set_shared);
-COND_SYSCALL(mmview_delete);
+COND_SYSCALL(mmview);

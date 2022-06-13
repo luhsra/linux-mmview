@@ -881,21 +881,12 @@ __SYSCALL(__NR_memfd_secret, sys_memfd_secret)
 __SYSCALL(__NR_process_mrelease, sys_process_mrelease)
 
 
-#define __NR_mmview_create 1000
-__SYSCALL(__NR_mmview_create, sys_mmview_create)
-
-#define __NR_mmview_migrate 1001
-__SYSCALL(__NR_mmview_migrate, sys_mmview_migrate)
-
-#define __NR_mmview_set_shared 1002
-__SYSCALL(__NR_mmview_set_shared, sys_mmview_set_shared)
-
-#define __NR_mmview_delete 1003
-__SYSCALL(__NR_mmview_delete, sys_mmview_delete)
+#define __NR_mmview 1000
+__SYSCALL(__NR_mmview, sys_mmview)
 
 
 #undef __NR_syscalls
-#define __NR_syscalls 1004
+#define __NR_syscalls 1001
 
 /*
  * 32 bit systems traditionally used different
